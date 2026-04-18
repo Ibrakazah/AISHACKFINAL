@@ -38,3 +38,10 @@ env/
 pdf_output.txt
 extract_pdf.py
 gen_schedule.py
+
+# WhatsApp Session
+.wwebjs_auth/
+.wwebjs_cache/
+wa-service/node_modules/
+qr.png
+test_webhook.py

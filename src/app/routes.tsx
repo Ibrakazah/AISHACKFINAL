@@ -6,6 +6,7 @@ import { Reports } from "./components/Reports";
 import { SuggestionsProblems } from "./components/SuggestionsProblems";
 import { DirectorCalendar } from "./components/DirectorCalendar";
 import { StaffDatabase } from "./components/StaffDatabase";
+import { AiChat } from "./components/AiChat";
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
       { path: "suggestions", Component: SuggestionsProblems },
       { path: "calendar", Component: DirectorCalendar },
       { path: "staff", Component: StaffDatabase },
+      { path: "ai-chat", Component: AiChat },
     ],
   },
 ]);

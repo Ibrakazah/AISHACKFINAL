@@ -19,7 +19,11 @@ import {
   Sun,
   Moon,
   BookOpen,
+  Wifi,
+  WifiOff
 } from "lucide-react";
+import { WhatsAppConnector } from "./WhatsAppConnector";
+import { toast } from "sonner";
 
 interface AINotification {
   id: number;
@@ -37,10 +41,94 @@ export function Layout() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
+  const [waStatus, setWaStatus] = useState("disconnected");
+  const [waPaused, setWaPaused] = useState(false);
+  const [isWsConnected, setIsWsConnected] = useState(false);
+
   // Ожидаем монтирования для корректной работы темы (избегание гидратации)
   useEffect(() => {
     setMounted(true);
+    
+    // Первичная загрузка статуса
+    fetch("http://localhost:8000/api/wa/status")
+      .then(res => res.json())
+      .then(data => {
+        setWaStatus(data.status);
+        setWaPaused(data.paused);
+      })
+      .catch(err => console.error("Failed to fetch WA status", err));
   }, []);
+
+  // WebSocket соединение (глобальное)
+  useEffect(() => {
+    const ws = new WebSocket("ws://localhost:8000/ws");
+    
+    ws.onopen = () => {
+      console.log("Global WebSocket Connected");
+      setIsWsConnected(true);
+    };
+    
+    ws.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      console.log("WS Event:", payload);
+      
+      if (payload.type === "WA_STATUS") {
+        setWaStatus(payload.status);
+      } else if (payload.type === "WA_PAUSED") {
+        setWaPaused(payload.paused);
+      } else if (payload.type === "NEW_MESSAGE") {
+        // Пробрасываем событие для ChatSummary
+        window.dispatchEvent(new CustomEvent("new-message", { detail: payload.data }));
+      } else if (payload.type === "NEW_AI_TASK") {
+        // Обработка новой ИИ задачи
+        window.dispatchEvent(new CustomEvent("ai-notification", { 
+          detail: { 
+            title: "Новая ИИ задача", 
+            message: payload.data.proposed_action, 
+            type: "success" 
+          } 
+        }));
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log("Global WebSocket Disconnected");
+      setIsWsConnected(false);
+      // Попытка реконнекта через 5 сек
+      setTimeout(() => {
+        // This is a simple way; in production use a ref and a loop
+      }, 5000);
+    };
+
+    return () => ws.close();
+  }, []);
+
+  const handleWaLogout = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/wa/logout", { method: "POST" });
+      const data = await res.json();
+      if (data.status === 'logged_out' || data.ok) {
+        setWaStatus("disconnected");
+      }
+    } catch (err) {
+      console.error("Logout failed", err);
+      throw err;
+    }
+  };
+
+  const handleWaPauseToggle = async () => {
+    try {
+      const endpoint = waPaused ? "resume" : "pause";
+      const res = await fetch(`http://localhost:8000/api/wa/${endpoint}`, { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setWaPaused(data.paused);
+      }
+    } catch (err) {
+      console.error("Pause/resume failed", err);
+      throw err;
+    }
+  };
 
   // Слушаем события ИИ-уведомлений
   useEffect(() => {
@@ -85,6 +173,7 @@ export function Layout() {
     { path: "/suggestions", label: "База приказов (RAG)", icon: BookOpen },
     { path: "/staff", label: "База персонала", icon: Users },
     { path: "/calendar", label: "Календарь директора", icon: CalendarDays },
+    { path: "/ai-chat", label: "AI Задачи & Чат", icon: Brain },
   ];
 
   const toggleTheme = () => {
@@ -166,6 +255,17 @@ export function Layout() {
             </p>
           </div>
           <div className="flex items-center gap-4">
+            {/* Статус WebSocket (для отладки/уверенности) */}
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest ${
+              isWsConnected ? "bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400" : "bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400"
+            }`}>
+              {isWsConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+              {isWsConnected ? "Live" : "Offline"}
+            </div>
+
+            {/* WhatsApp Коннектор */}
+            <WhatsAppConnector status={waStatus} isPaused={waPaused} onLogout={handleWaLogout} onTogglePause={handleWaPauseToggle} />
+
             {/* Переключатель темы */}
             <button 
               onClick={toggleTheme}

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import uvicorn
@@ -18,10 +18,37 @@ app.add_middleware(
 )
 
 # 🔑 API Config
-API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")  # Set GROQ_API_KEY env variable
+API_KEY = os.environ.get("GROQ_API_KEY", "")  # Set GROQ_API_KEY env variable
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DB_PATH = "server/schedule.db"
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                print(f"WebSocket send error: {e}")
+
+manager = ConnectionManager()
+
+# 📱 WhatsApp status tracking
+ALLOWED_WHATSAPP_GROUPS = ["akbobek Uralsk", "Султан"] 
+wa_status = "disconnected"  # disconnected | qr_ready | connected
+wa_paused = False # whether to pause accepting incoming webhook messages
+WA_SERVICE_URL = "http://127.0.0.1:3000"
 
 def query_db(query, args=(), one=False):
     conn = sqlite3.connect(DB_PATH)
@@ -32,6 +59,294 @@ def query_db(query, args=(), one=False):
     conn.commit()
     conn.close()
     return (rv[0] if rv else None) if one else rv
+
+@app.on_event("startup")
+def startup_event():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS ai_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            original_message TEXT NOT NULL,
+            proposed_action TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# ═══ WhatsApp Status API ═══
+
+@app.get("/api/wa/status")
+async def get_wa_status():
+    return {"status": wa_status, "paused": wa_paused}
+
+@app.post("/api/wa/pause")
+async def pause_wa():
+    global wa_paused
+    wa_paused = True
+    await manager.broadcast({"type": "WA_PAUSED", "paused": wa_paused})
+    return {"ok": True, "paused": wa_paused}
+
+@app.post("/api/wa/resume")
+async def resume_wa():
+    global wa_paused
+    wa_paused = False
+    await manager.broadcast({"type": "WA_PAUSED", "paused": wa_paused})
+    return {"ok": True, "paused": wa_paused}
+
+@app.get("/api/wa/qr")
+async def get_wa_qr():
+    """Proxy QR data from the Node.js wa-service"""
+    try:
+        resp = requests.get(f"{WA_SERVICE_URL}/qr", timeout=3)
+        return resp.json()
+    except Exception as e:
+        print(f"WA QR fetch error: {e}")
+        return {"qr": None, "status": wa_status}
+
+@app.post("/api/wa/status-update")
+async def wa_status_update(request: Request):
+    """Called by the Node.js wa-service when status changes"""
+    global wa_status
+    data = await request.json()
+    wa_status = data.get("status", "disconnected")
+    print(f"WhatsApp status -> {wa_status}")
+    await manager.broadcast({"type": "WA_STATUS", "status": wa_status})
+    return {"ok": True}
+
+@app.post("/api/wa/logout")
+async def wa_logout():
+    """Proxy logout to wa-service Node.js"""
+    global wa_status
+    try:
+        resp = requests.post(f"{WA_SERVICE_URL}/logout", timeout=10)
+        wa_status = "disconnected"
+        await manager.broadcast({"type": "WA_STATUS", "status": "disconnected"})
+        return resp.json()
+    except Exception as e:
+        print(f"WA logout error: {e}")
+        return {"error": str(e)}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.get("/api/messages")
+async def get_messages():
+    try:
+        messages = query_db("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT 50")
+        res = []
+        if messages:
+            for ix in messages:
+                d = dict(ix)
+                d["is_important"] = bool(d.get("is_important", 0))
+                res.append(d)
+        return res
+    except Exception as e:
+        print(f"Error fetching messages: {e}")
+        return []
+
+@app.post("/internal-webhook")
+async def internal_webhook(request: Request):
+    data = await request.json()
+    from_id = data.get("from", "unknown")
+    text_body = data.get("body", "")
+    platform = data.get("platform", "whatsapp")
+    is_group = data.get("isGroupMsg", False)
+    group_name = data.get("group_name")
+    user_name = data.get("user_name") or from_id.split("@")[0]
+    
+    source_name = group_name if (is_group and group_name) else user_name
+    
+    # Optional Group Filtering (REMOVED as per user request)
+    
+    if wa_paused:
+        print("Webhook received but WA is paused. Ignoring.")
+        return {"status": "paused"}
+        
+    # Get recent history to provide context for AI (especially for clarifications)
+    conn_hist = sqlite3.connect(DB_PATH)
+    cur_hist = conn_hist.cursor()
+    cur_hist.execute("SELECT message FROM chat_messages WHERE sender = ? ORDER BY timestamp DESC LIMIT 2", (source_name,))
+    recent_history = cur_hist.fetchall()
+    conn_hist.close()
+    history_text = "\n".join([row[0] for row in reversed(recent_history)]) if recent_history else "Нет предыдущих сообщений."
+        
+    # Analyze message with Groq AI for Summary & Importance
+    prompt = f"""
+    Проанализируй следующее сообщение из школьного чата (в WhatsApp или Telegram).
+    Источник/Группа/Человек: '{source_name}'
+    Предыдущие сообщения этого пользователя (контекст): '{history_text}'
+    Текущее сообщение: '{text_body}'
+    
+    Задачи: 
+    1. Установи возможную роль отправителя (если понятна, иначе 'Учитель', 'Завуч', 'Завхоз' или 'Сотрудник').
+    2. Является ли сообщение ВАЖНОЙ школьной информацией? (is_important: true/false). Важным считается: кто-то заболел, отсутствует, сломалось, инциденты, поручения. Пустая болтовня — false.
+    3. Выдели САМУЮ СУТЬ в одно предложение (сухой пересказ). Если не важное — оставь summary пустым.
+    4. Если это сообщение о проблеме, для решения которой НЕ ХВАТАЕТ данных (например, сломался стул, но не указан кабинет) -> needs_clarification: true, и напиши clarification_text от лица бота с вопросом, что уточнить (например "Уточните кабинет, пожалуйста").
+    5. Если данных ДОСТАТОЧНО для решения проблемы (н-р "в 302 кабинете потоп"), предложи ДЕЙСТВИЕ (proposed_action), например "Отправить техперсонал в 302 кабинет". В противном случае оставь пустым.
+    
+    Верни чистый JSON без маркдауна:
+    {{ 
+      "role": "string", 
+      "is_important": boolean, 
+      "summary": "только суть или пустая строка",
+      "needs_clarification": boolean,
+      "clarification_text": "вопрос или пустая строка",
+      "proposed_action": "действие или пустая строка"
+    }}
+    """
+    
+    is_important = False
+    role = "Сотрудник"
+    final_text = text_body
+    
+    try:
+        headers = {"Authorization": f"Bearer {API_KEY}"}
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{ "role": "user", "content": prompt }],
+            "temperature": 0
+        }
+        resp = requests.post(GROQ_URL, headers=headers, json=payload)
+        # Debug log for Groq
+        print(f"Groq API Response for '{text_body[:20]}...': {resp.status_code} - {resp.text[:200]}")
+        
+        ai_text = resp.json()['choices'][0]['message']['content']
+        json_str = ai_text.replace('```json', '').replace('```', '').strip()
+        analysis = json.loads(json_str)
+        role = analysis.get("role", "Сотрудник")
+        is_important = analysis.get("is_important", False)
+        
+        summary = analysis.get("summary", "").strip()
+        needs_clarification = analysis.get("needs_clarification", False)
+        clarification_text = analysis.get("clarification_text", "").strip()
+        proposed_action = analysis.get("proposed_action", "").strip()
+        
+        # Если ИИ посчитал сообщение важным и сгенерировал summary — используем его вместо сырого текста
+        if is_important and summary:
+            final_text = summary
+            
+        # Автоматическое уточнение из ИИ (если нет нужных данных, отправляем ответ в WhatsApp)
+        if needs_clarification and clarification_text:
+            try:
+                requests.post(f"{WA_SERVICE_URL}/send", json={"to": from_id, "text": clarification_text}, timeout=5)
+                # Дописываем к тексту то, что ИИ задал уточняющий вопрос
+                final_text += f"\n[Бот запросил уточнение: '{clarification_text}']"
+            except Exception as auto_reply_err:
+                print(f"Failed to send auto-reply clarification: {auto_reply_err}")
+                
+        # Если есть предложенное действие, сохраняем в ai_tasks
+        if proposed_action and not needs_clarification:
+            conn_tasks = sqlite3.connect(DB_PATH)
+            cur_tasks = conn_tasks.cursor()
+            cur_tasks.execute('''
+                INSERT INTO ai_tasks (source, original_message, proposed_action, status)
+                VALUES (?, ?, ?, 'pending')
+            ''', (source_name, text_body, proposed_action))
+            task_id = cur_tasks.lastrowid
+            conn_tasks.commit()
+            
+            # Broadcast the new task to frontend
+            import copy
+            task_obj = {
+                "id": task_id,
+                "source": source_name,
+                "original_message": text_body,
+                "proposed_action": proposed_action,
+                "status": "pending"
+            }
+            await manager.broadcast({"type": "NEW_AI_TASK", "data": task_obj})
+            
+            conn_tasks.close()
+            
+    except Exception as e:
+        print(f"Failed to analyze message: {e}")
+        
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    
+    # Пытаемся найти недавнее важное сообщение от этого же отправителя, чтобы обновить его (merge) а не дублировать
+    cur.execute("SELECT id, message FROM chat_messages WHERE sender = ? AND is_important = 1 ORDER BY timestamp DESC LIMIT 1", (source_name,))
+    last_msg = cur.fetchone()
+    
+    if is_important and last_msg and ("Бот запросил" in last_msg[1] or needs_clarification):
+        # Обновляем старое сообщение (сливаем вместе)
+        last_id = last_msg[0]
+        base_text = last_msg[1].split("\n[Бот")[0]
+        merged_text = f"{base_text}\n-> Дополнение: {final_text}"
+        cur.execute("UPDATE chat_messages SET message = ? WHERE id = ?", (merged_text, last_id))
+        new_id = last_id
+        final_text = merged_text
+    else:
+        cur.execute('''
+            INSERT INTO chat_messages (platform, sender, role, message, is_important)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (platform, source_name, role, final_text, is_important))
+        new_id = cur.lastrowid
+    
+    # get the timestamp
+    cur.execute("SELECT timestamp FROM chat_messages WHERE id = ?", (new_id,))
+    timestamp = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+    
+    new_msg = {
+        "id": new_id,
+        "platform": platform,
+        "sender": source_name,
+        "role": role,
+        "message": final_text,
+        "is_important": bool(is_important),
+        "timestamp": timestamp
+    }
+    
+    await manager.broadcast({"type": "NEW_MESSAGE", "data": new_msg})
+    
+    return {"status": "received"}
+
+@app.get("/api/ai-tasks")
+async def get_ai_tasks():
+    try:
+        tasks = query_db("SELECT * FROM ai_tasks ORDER BY created_at DESC LIMIT 50")
+        return [dict(t) for t in (tasks or [])]
+    except Exception as e:
+        print(f"Error fetching ai tasks: {e}")
+        return []
+
+@app.post("/api/ai-tasks/{task_id}/resolve")
+async def resolve_ai_task(task_id: int, request: Request):
+    data = await request.json()
+    action = data.get("action", "approve") # 'approve' | 'reject'
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("UPDATE ai_tasks SET status = ? WHERE id = ?", (action, task_id))
+    conn.commit()
+    conn.close()
+    
+    if action == "approve":
+        # Отправляем задачу напрямую контакту "Султан" через WhatsApp
+        try:
+            # Получаем детали задачи
+            tasks_data = query_db("SELECT * FROM ai_tasks WHERE id = ?", (task_id,), one=True)
+            if tasks_data:
+                msg_text = f"🛠️ *Новая задача от Интеллект-Системы:*\n\nИсточник: {tasks_data['source']}\nДетали: {tasks_data['proposed_action']}\n\nОригинал: {tasks_data['original_message']}"
+                requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Султан", "text": msg_text}, timeout=10)
+        except Exception as e:
+            print(f"Failed to send task to Sultan: {e}")
+            
+        return {"status": "approved", "message": "Задача выполнена и отправлена Султану"}
+    else:
+        return {"status": "rejected", "message": "Задача отклонена"}
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
@@ -76,7 +391,7 @@ async def process_command(command: str = Body(..., embed=True)):
         
         JSON Format:
         {{
-          "intent": "schedule" | "reports" | "chat" | "suggestions" | "calendar" | "tasks" | "unknown",
+          "intent": "schedule" | "reports" | "chat" | "suggestions" | "calendar" | "tasks" | "send_message" | "unknown",
           "route": "string",
           "sectionName": "string (на русском)",
           "confidence": number,
@@ -86,7 +401,9 @@ async def process_command(command: str = Body(..., embed=True)):
             "teacherName": "string",
             "reportNumber": "string",
             "className": "string",
-            "topic": "string"
+            "topic": "string",
+            "targetGroup": "string (имя группы в WhatsApp, например 'Техники' или 'Учителя')",
+            "messageText": "string (текст сообщения для отправки)"
           }},
           "scheduleUpdate": {{
              "day": "string (Понедельник, Вторник, Среда, Четверг, Пятница)",
@@ -123,6 +440,21 @@ async def process_command(command: str = Body(..., embed=True)):
         json_str = ai_text.replace('```json', '').replace('```', '').strip()
         data = json.loads(json_str)
         
+        # Обработка отправки сообщения
+        if data.get("intent") == "send_message":
+            target_group = data.get("entities", {}).get("targetGroup")
+            message_text = data.get("entities", {}).get("messageText")
+            if target_group and message_text:
+                try:
+                    resp = requests.post(f"{WA_SERVICE_URL}/send-group", json={"groupName": target_group, "text": message_text}, timeout=10)
+                    resp_data = resp.json()
+                    if resp.status_code == 200:
+                        data["actions"].append(f"Успешно отправлено в {target_group}")
+                    else:
+                        data["actions"].append(f"Ошибка отправки: {resp_data.get('error')}")
+                except Exception as we:
+                    data["actions"].append(f"Ошибка связи с WA сервисом: {we}")
+
         return data
         
     except Exception as e:

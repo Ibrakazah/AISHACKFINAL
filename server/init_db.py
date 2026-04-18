@@ -59,6 +59,19 @@ def init_db():
     )
     ''')
     
+    # 6. Таблица сообщений чата (TG / WhatsApp)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        role TEXT,
+        message TEXT NOT NULL,
+        is_important BOOLEAN DEFAULT 0,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    
     # --- БАЗОВОЕ ЗАПОЛНЕНИЕ ДАННЫМИ ИЗ ВАШЕГО PDF ---
     
     subjects = [
