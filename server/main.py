@@ -1150,6 +1150,7 @@ async def delete_calendar_event(event_id: int):
 @app.post("/api/ai/command")
 async def process_command(cmd: dict):
     command = cmd.get("text", "")
+    import datetime
     try:
         teachers = [r['name'] for r in query_db("SELECT name FROM teachers")]
         
@@ -1190,6 +1191,11 @@ async def process_command(cmd: dict):
 
         Пример: "Напиши Адилю, что завтра совещание в 10"
         Ответ: {{"intent": "send_message", "summary": "Отправка сообщения Адилю о совещании", "entities": {{"target": "Adil", "message": "Завтра совещание в 10"}}, "proposedAction": {{"type": "send_whatsapp", "params": {{"contact": "Adil", "message": "Завтра совещание в 10"}}}}}}
+
+        Пример заполнения для календаря:
+        {{"intent": "calendar_event", "summary": "Совещание завучей", "entities": {{"date": "2026-04-20"}}, "proposedAction": {{"type": "create_event", "params": {{"title": "Совещание завучей", "date": "2026-04-20", "time": "10:00"}}}}}}
+
+        ВАЖНО: Если создаешь событие в календаре (create_event), ОБЯЗАТЕЛЬНО передавай params.date строго в формате "YYYY-MM-DD". Текущая дата: {datetime.date.today().isoformat()}. Если время не указано, ставь "09:00".
 
         Команда директора: "{command}"
         """
