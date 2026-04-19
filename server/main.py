@@ -803,98 +803,99 @@ async def generate_fast(request: Request):
         group_data = lent.get("groupData", [])
         lent_id = lent.get("id")
         
-        # 1. Интеллектуальный поиск общего окна (балансировка нагрузки по дням)
-        def get_lent_score(d):
-            if not p_classes: return 0
-            return max(class_day_load.get(c, {}).get(d, 0) for c in p_classes)
+        for _ in range(lent.get("hoursPerWeek", 1)):
+            # 1. Интеллектуальный поиск общего окна (балансировка нагрузки по дням)
+            def get_lent_score(d):
+                if not p_classes: return 0
+                return max(class_day_load.get(c, {}).get(d, 0) for c in p_classes)
             
-        sorted_slots = sorted([{"day": d, "time": t} for d in days for t in time_slots], 
-                              key=lambda s: (get_lent_score(s["day"]), days.index(s["day"]), time_slots.index(s["time"])))
+            sorted_slots = sorted([{"day": d, "time": t} for d in days for t in time_slots], 
+                                  key=lambda s: (get_lent_score(s["day"]), days.index(s["day"]), time_slots.index(s["time"])))
                               
-        found_slot = None
-        for slot in sorted_slots:
-            d, t = slot["day"], slot["time"]
-            can_place = True
+            found_slot = None
+            for slot in sorted_slots:
+                d, t = slot["day"], slot["time"]
+                can_place = True
+                if lent_type == "profile":
+                    for cls in p_classes:
+                        if not is_free(cls, None, None, d, t): 
+                            can_place = False
+                            break
+                    if not can_place: continue
+                    for gd in group_data:
+                        if gd.get("room") and not is_free(None, gd.get("room"), None, d, t): can_place = False; break
+                        if gd.get("teacher") and not is_free(None, None, gd.get("teacher"), d, t): can_place = False; break
+                else:
+                    for gi in range(grps):
+                        teacher = lent_t[gi] if gi < len(lent_t) else ""
+                        room = lent_r[gi] if gi < len(lent_r) else ""
+                        assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
+                        for cls in assigned:
+                            if not is_free(cls, room, teacher, d, t):
+                                can_place = False
+                                break
+                        if not can_place: break
+            
+                if can_place:
+                    found_slot = (d, t)
+                    break
+            
+            if not found_slot:
+                conflicts += 1
+                print(f"Внимание: Не удалось найти слот для ленты {lent_id}")
+                continue
+            
+            fd, ft = found_slot
+        
+            # 2. Фактическое размещение в найденный слот (fd, ft)
             if lent_type == "profile":
-                for cls in p_classes:
-                    if not is_free(cls, None, None, d, t): 
-                        can_place = False
-                        break
-                if not can_place: continue
+                all_s = []
+                all_r = []
+                all_t = []
                 for gd in group_data:
-                    if gd.get("room") and not is_free(None, gd.get("room"), None, d, t): can_place = False; break
-                    if gd.get("teacher") and not is_free(None, None, gd.get("teacher"), d, t): can_place = False; break
+                    if gd.get("subject"): all_s.append(gd["subject"])
+                    if gd.get("room"): all_r.append(gd["room"])
+                    if gd.get("teacher"): all_t.append(gd["teacher"])
+            
+                agg_subject = " / ".join(all_s) if all_s else lent.get("subject", "")
+                agg_room = " / ".join(all_r) if all_r else "..."
+                agg_teacher = " / ".join(all_t) if all_t else "Учителя"
+            
+                for cls in p_classes:
+                    schedule[cls][fd][ft] = {
+                        "subject": agg_subject,
+                        "teacher": agg_teacher,
+                        "room": agg_room,
+                        "isLent": True,
+                        "lentType": "profile",
+                        "lentId": lent_id
+                    }
+                    mark_busy(cls, None, None, fd, ft)
+                for gd in group_data:
+                    # В профиле кабинеты и учителя не привязаны к конкретному классу, но заняты на это время
+                    for cls in p_classes: mark_busy(None, gd.get("room"), gd.get("teacher"), fd, ft)
+                
+                total_lessons += len(p_classes)
             else:
                 for gi in range(grps):
                     teacher = lent_t[gi] if gi < len(lent_t) else ""
                     room = lent_r[gi] if gi < len(lent_r) else ""
+                    gname = gnames[gi] if gi < len(gnames) else f"Группа {gi+1}"
                     assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
+                
                     for cls in assigned:
-                        if not is_free(cls, room, teacher, d, t):
-                            can_place = False
-                            break
-                    if not can_place: break
-            
-            if can_place:
-                found_slot = (d, t)
-                break
-            
-        if not found_slot:
-            conflicts += 1
-            print(f"Внимание: Не удалось найти слот для ленты {lent_id}")
-            continue
-            
-        fd, ft = found_slot
-        
-        # 2. Фактическое размещение в найденный слот (fd, ft)
-        if lent_type == "profile":
-            all_s = []
-            all_r = []
-            all_t = []
-            for gd in group_data:
-                if gd.get("subject"): all_s.append(gd["subject"])
-                if gd.get("room"): all_r.append(gd["room"])
-                if gd.get("teacher"): all_t.append(gd["teacher"])
-            
-            agg_subject = " / ".join(all_s) if all_s else lent.get("subject", "")
-            agg_room = " / ".join(all_r) if all_r else "..."
-            agg_teacher = " / ".join(all_t) if all_t else "Учителя"
-            
-            for cls in p_classes:
-                schedule[cls][fd][ft] = {
-                    "subject": agg_subject,
-                    "teacher": agg_teacher,
-                    "room": agg_room,
-                    "isLent": True,
-                    "lentType": "profile",
-                    "lentId": lent_id
-                }
-                mark_busy(cls, None, None, fd, ft)
-            for gd in group_data:
-                # В профиле кабинеты и учителя не привязаны к конкретному классу, но заняты на это время
-                for cls in p_classes: mark_busy(None, gd.get("room"), gd.get("teacher"), fd, ft)
-                
-            total_lessons += len(p_classes)
-        else:
-            for gi in range(grps):
-                teacher = lent_t[gi] if gi < len(lent_t) else ""
-                room = lent_r[gi] if gi < len(lent_r) else ""
-                gname = gnames[gi] if gi < len(gnames) else f"Группа {gi+1}"
-                assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
-                
-                for cls in assigned:
-                    schedule[cls][fd][ft] = {
-                        "subject": lent.get("subject", "Ағылшын тілі"),
-                        "teacher": teacher,
-                        "room": room,
-                        "isLent": True,
-                        "lentType": "level",
-                        "lentGroup": gname,
-                        "lentId": lent_id
-                    }
-                    mark_busy(cls, room, teacher, fd, ft)
-                    total_lessons += 1
-        lents_placed += 1
+                        schedule[cls][fd][ft] = {
+                            "subject": lent.get("subject", "Ағылшын тілі"),
+                            "teacher": teacher,
+                            "room": room,
+                            "isLent": True,
+                            "lentType": "level",
+                            "lentGroup": gname,
+                            "lentId": lent_id
+                        }
+                        mark_busy(cls, room, teacher, fd, ft)
+                        total_lessons += 1
+            lents_placed += 1
         
     queue = []
     strict = {}

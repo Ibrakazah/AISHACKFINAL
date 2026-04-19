@@ -28,11 +28,10 @@ export interface LentConfig {
   type: LentType;
   parallelClasses: string[];
   subject: string;        // for level lents: the one shared subject
+  hoursPerWeek: number;   // number of times this lent occurs in the week
   groups: number;
   groupNames: string[];   // kept for backward compat with generator
   groupData: LentGroup[]; // new: full per-group detail
-  fixedDay: string;
-  fixedTime: string;
   teachers: string[];     // kept for backward compat
   rooms: string[];        // kept for backward compat
 }
@@ -51,8 +50,7 @@ const DEFAULT_LENTS: LentConfig[] = [
       { name: "Intermediate",       subject: "Ағылшын тілі", teacher: "Ақырап А.",        room: "302" },
       { name: "Upper-Intermediate", subject: "Ағылшын тілі", teacher: "",                 room: "301" },
     ],
-    fixedDay: "Вторник",
-    fixedTime: "10:10-10:55",
+    hoursPerWeek: 1,
     teachers: ["Қайыржанова А.","Таңатар М.М.","Ақырап А.",""],
     rooms: ["304","305","302","301"],
   },
@@ -69,8 +67,7 @@ const DEFAULT_LENTS: LentConfig[] = [
       { name: "История",    subject: "Дүниежүзі тарихы", teacher: "Балтабай Ж.",     room: "301" },
       { name: "Информатика",subject: "Информатика",  teacher: "Ахметова И.",         room: "107" },
     ],
-    fixedDay: "Среда",
-    fixedTime: "11:00-11:45",
+    hoursPerWeek: 1,
     teachers: ["Сулейманов Б.","Назаров Д.","Балтабай Ж.","Ахметова И."],
     rooms: ["209","201","301","107"],
   },
@@ -126,8 +123,7 @@ export function LentPanel() {
           { name: "Intermediate", subject: "Ағылшын тілі", teacher: "", room: "" },
           { name: "Upper",        subject: "Ағылшын тілі", teacher: "", room: "" },
         ],
-        fixedDay: "Вторник",
-        fixedTime: "10:10-10:55",
+        hoursPerWeek: 1,
         teachers: ["","",""],
         rooms: ["","",""],
       };
@@ -145,8 +141,7 @@ export function LentPanel() {
           { name: "Профиль 2", subject: "", teacher: "", room: "" },
           { name: "Профиль 3", subject: "", teacher: "", room: "" },
         ],
-        fixedDay: "Среда",
-        fixedTime: "11:00-11:45",
+        hoursPerWeek: 1,
         teachers: ["","",""],
         rooms: ["","",""],
       };
@@ -333,31 +328,27 @@ export function LentPanel() {
               </div>
             </div>
 
-            {/* Step 3: fixed slot */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[10px] font-black text-gray-500 dark:text-slate-400 uppercase tracking-widest mb-2 block">
-                  3. Фиксированный день
-                </label>
-                <select
-                  value={lent.fixedDay}
-                  onChange={e => updateLent(lent.id, "fixedDay", e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 transition-all"
-                >
-                  {DAYS.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] font-black text-gray-500 dark:text-slate-400 uppercase tracking-widest mb-2 block">
-                  Фиксированное время
-                </label>
-                <select
-                  value={lent.fixedTime}
-                  onChange={e => updateLent(lent.id, "fixedTime", e.target.value)}
-                  className="w-full bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl px-3 py-2.5 text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-purple-500 transition-all"
-                >
-                  {TIME_SLOTS.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
+            {/* Step 3: Hours Per Week */}
+            <div>
+              <label className="text-[10px] font-black text-gray-500 dark:text-slate-400 uppercase tracking-widest mb-2 block">
+                3. Количество уроков этой ленты в неделю
+              </label>
+              <div className="flex gap-2">
+                {[1,2,3,4,5,6].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => updateLent(lent.id, "hoursPerWeek", n)}
+                    className={`w-10 h-10 rounded-xl font-black text-sm transition-all border ${
+                      (lent.hoursPerWeek || 1) === n
+                        ? lent.type === "profile"
+                          ? "bg-amber-500 text-white border-amber-400 shadow"
+                          : "bg-purple-600 text-white border-purple-500 shadow"
+                        : "bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-slate-300 border-gray-200 dark:border-slate-700 hover:border-purple-400"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -480,9 +471,9 @@ export function LentPanel() {
               <Info className={`w-4 h-4 flex-shrink-0 ${lent.type === "profile" ? "text-amber-500" : "text-indigo-500"}`} />
               <p className={`text-xs font-medium ${lent.type === "profile" ? "text-amber-700 dark:text-amber-300" : "text-indigo-700 dark:text-indigo-300"}`}>
                 {lent.type === "profile"
-                  ? <>При генерации: <strong>{lent.fixedDay} {lent.fixedTime}</strong> — ученики классов{" "}
+                  ? <>При генерации: <strong>{lent.hoursPerWeek || 1} раз(а) в неделю</strong> — ученики классов{" "}
                     <strong>{lent.parallelClasses.join(", ")}</strong> расходятся по {lent.groups} профильным предметам одновременно.</>
-                  : <>При генерации: <strong>{lent.fixedDay} {lent.fixedTime}</strong> будет заблокирован для{" "}
+                  : <>При генерации: <strong>{lent.hoursPerWeek || 1} раз(а) в неделю</strong> будет заблокирован для{" "}
                     {lent.parallelClasses.slice(0,3).join(", ")}{lent.parallelClasses.length > 3 ? "..." : ""} — {lent.groups} групп параллельно.</>
                 }
               </p>
