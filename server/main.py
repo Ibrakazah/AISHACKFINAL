@@ -6,6 +6,8 @@ import uvicorn
 import sqlite3
 import json
 import os
+import base64
+import tempfile
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -285,7 +287,46 @@ async def internal_webhook(request: Request):
     is_group = data.get("isGroupMsg", False)
     group_name = data.get("group_name")
     user_name = data.get("user_name") or from_id.split("@")[0]
+    audio_base64 = data.get("audio_base64")
+    mimetype = data.get("mimetype", "audio/ogg")
     
+    # NEW: Handle voice messages
+    if audio_base64:
+        try:
+            print(f"Transcribing voice message from {user_name}...")
+            # Prepare file extension
+            ext = ".ogg"
+            if "mp4" in mimetype: ext = ".m4a"
+            elif "webm" in mimetype: ext = ".webm"
+            
+            audio_data = base64.b64decode(audio_base64)
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(audio_data)
+                tmp_path = tmp.name
+                
+            with open(tmp_path, "rb") as file:
+                headers = {"Authorization": f"Bearer {API_KEY}"}
+                files = {
+                    "file": (os.path.basename(tmp_path), file.read(), mimetype),
+                    "model": (None, "whisper-large-v3-turbo"),
+                    "language": (None, "ru"),
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(WHISPER_URL, headers=headers, files=files, timeout=30)
+                
+            os.unlink(tmp_path)
+            
+            if response.status_code == 200:
+                res_json = response.json()
+                transcribed_text = res_json.get("text", "")
+                if transcribed_text:
+                    print(f"Transcribed: {transcribed_text}")
+                    text_body = transcribed_text
+            else:
+                print(f"Transcription failed: {response.text}")
+        except Exception as e:
+            print(f"Error processing audio webhook: {e}")
+
     source_name = group_name if (is_group and group_name) else user_name
     
     # Strict filtering for allowed sources removed to receive from everyone
@@ -537,16 +578,20 @@ async def resolve_ai_task(task_id: int, request: Request):
     if action == "approve":
         # Отправляем сообщение нужному адресату
         try:
-            tasks_data = query_db("SELECT * FROM ai_tasks WHERE id = ?", (task_id,), one=True)
-            if tasks_data:
+            raw_data = query_db("SELECT * FROM ai_tasks WHERE id = ?", (task_id,), one=True)
+            if raw_data:
+                # Convert Row to dict so we can use .get()
+                tasks_data = dict(raw_data)
                 target_assignee = tasks_data.get('assignee', 'Султан')
                 msg_text = f"🛠️ *Новая задача/Уведомление от ИИ-Директора:*\n\nКому: {target_assignee}\nИсточник: {tasks_data['source']}\nДетали: {tasks_data['proposed_action']}\n\nОригинал: {tasks_data['original_message']}"
                 async with httpx.AsyncClient() as client:
                     await client.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target_assignee, "text": msg_text}, timeout=10)
+                return {"status": "approved", "message": f"Задача выполнена и отправлена адресату: {target_assignee}"}
         except Exception as e:
-            print(f"Failed to send task to {target_assignee}: {e}")
+            print(f"Failed to resolve task {task_id}: {e}")
+            return {"status": "error", "message": str(e)}
             
-        return {"status": "approved", "message": f"Задача выполнена и отправлена адресату: {tasks_data.get('assignee', 'Султан')}"}
+        return {"status": "approved", "message": "Задача одобрена"}
     else:
         return {"status": "rejected", "message": "Задача отклонена"}
 

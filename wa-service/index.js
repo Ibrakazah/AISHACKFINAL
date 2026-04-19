@@ -108,6 +108,16 @@ client.on('message', async (message) => {
             group_name: chat.isGroup ? chat.name : null
         };
 
+        // NEW: If message has media (voice note), download and attach it
+        if (message.hasMedia) {
+            const media = await message.downloadMedia();
+            if (media && (media.mimetype.includes('audio') || media.mimetype.includes('ptt'))) {
+                console.log(`[WA] Attaching voice media: ${media.mimetype}`);
+                payload.audio_base64 = media.data;
+                payload.mimetype = media.mimetype;
+            }
+        }
+
         const response = await axios.post(PYTHON_BACKEND_URL, payload);
         console.log(`[WA] Backend responded: ${response.status}`);
     } catch (error) {
