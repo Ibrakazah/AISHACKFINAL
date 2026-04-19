@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+httpx
+python-dotenv
+groq
+python-multipart
+websockets

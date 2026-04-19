@@ -28,7 +28,7 @@ app.add_middleware(
 API_KEY = os.getenv("GROQ_API_KEY", "YOUR_KEY_HERE")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-DB_PATH = "server/schedule.db"
+DB_PATH = "schedule.db"
 
 class ConnectionManager:
     def __init__(self):

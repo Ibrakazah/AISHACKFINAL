@@ -1,7 +1,7 @@
 import sqlite3
 import os
 
-DB_PATH = "server/schedule.db"
+DB_PATH = "schedule.db"
 
 def init_db():
     os.makedirs("server", exist_ok=True)
