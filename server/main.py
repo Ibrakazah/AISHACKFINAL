@@ -395,19 +395,28 @@ async def internal_webhook(request: Request):
 
     3. ТРЕБОВАНИЕ К ВЫХОДУ: 
        Если сообщение мусорное (короткое, опечатка) -> is_important ДОЛЖЕН быть false, а proposed_action ПУСТЫМ "".
+       Если это просьба поставить совещание, встречу или мероприятие в календарь -> intent "calendar" и заполни calendar_event.
 
     JSON:
     {{ 
       "role": "string", "is_important": boolean, "summary": "суть",
-      "needs_clarification": boolean,
+      "needs_clarification": boolean, "intent": "string",
       "proposed_action": "действие ИЛИ пустая строка если сообщение не важное",
       "assignee": "ФИО или Завуч", "is_continuation": boolean,
       "nutrition": {{ "is_nutrition": boolean, "sick_count": 0 }},
       "incident": {{
          "is_incident": boolean, "location": "где",
-         "assigned_to": "ФИО из техперсонала (например: Конырбаев Асет)"
+         "assigned_to": "ФИО из техперсонала"
+      }},
+      "calendar_event": {{
+         "is_calendar": boolean,
+         "title": "название встречи",
+         "date": "YYYY-MM-DD",
+         "time": "HH:MM",
+         "location": "где"
       }}
     }}
+    Сегодня: {datetime.date.today().isoformat()}
     Отправитель: '{source_name}', Текст: '{text_body}', История: '{history_text}'
     """
     
@@ -435,7 +444,13 @@ async def internal_webhook(request: Request):
         
         ai_text = resp.json()['choices'][0]['message']['content']
         json_str = ai_text.replace('```json', '').replace('```', '').strip()
-        analysis = json.loads(json_str)
+        
+        try:
+            analysis = json.loads(json_str)
+        except json.JSONDecodeError as de:
+            print(f"JSON decode error: {de} in {json_str}")
+            analysis = {"is_important": True, "proposed_action": "Проверить чат: ошибка ИИ"}
+            
         role = analysis.get("role", "Сотрудник")
         is_important = analysis.get("is_important", False)
         
@@ -448,6 +463,7 @@ async def internal_webhook(request: Request):
 
         nutrition = analysis.get("nutrition", {})
         incident = analysis.get("incident", {})
+        calendar_info = analysis.get("calendar_event", {})
         
         # Если ИИ посчитал сообщение важным и сгенерировал summary — используем его вместо сырого текста
         if is_important and summary:
@@ -497,6 +513,19 @@ async def internal_webhook(request: Request):
                 else:
                     cur_tasks.execute("INSERT INTO nutrition_reports (date, sick_count, competition_count, raw_messages_parsed) VALUES (?, ?, ?, 1)", (today_str, s_count, c_count))
             
+            if calendar_info and calendar_info.get("is_calendar"):
+                ev_date = calendar_info.get("date") or datetime.date.today().isoformat()
+                cur_tasks.execute('''
+                    INSERT INTO calendar_events (title, type, date, time, location, description, source)
+                    VALUES (?, 'meeting', ?, ?, ?, ?, 'whatsapp_ai')
+                ''', (
+                    calendar_info.get("title", summary or "Новая встреча"),
+                    ev_date,
+                    calendar_info.get("time", "12:00"),
+                    calendar_info.get("location", ""),
+                    proposed_action or summary
+                ))
+            
             conn_tasks.commit()
             
             # Broadcast the new task to frontend
@@ -522,6 +551,10 @@ async def internal_webhook(request: Request):
                         # Оповещаем Адиля о новых данных по питанию
                         notif_text = f"🍎 *Обновление по питанию:* {source_name} сообщил о {nutrition.get('sick_count', 0)} болеющих."
                         await client.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Adil", "text": notif_text}, timeout=5)
+                    
+                    if calendar_info and calendar_info.get("is_calendar"):
+                        await manager.broadcast({"type": "CALENDAR_UPDATE"})
+                        
             except Exception as e:
                 print(f"Failed to auto-notify: {e}")
 
