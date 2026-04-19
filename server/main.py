@@ -343,7 +343,7 @@ async def internal_webhook(request: Request):
     # Get global recent history to provide full context across all chats
     conn_hist = sqlite3.connect(DB_PATH)
     cur_hist = conn_hist.cursor()
-    cur_hist.execute("SELECT sender, message FROM chat_messages ORDER BY timestamp DESC LIMIT 15")
+    cur_hist.execute("SELECT sender, message FROM chat_messages ORDER BY timestamp DESC LIMIT 5")
     global_recent = cur_hist.fetchall()
     conn_hist.close()
     
@@ -363,26 +363,34 @@ async def internal_webhook(request: Request):
         
     # Analyze message with Groq AI for Summary & Importance
     prompt = f"""
-    Ты - умный ИИ-Директор школы. Проанализируй сообщение из чата.
-    Раздели смыслы:
-    1. КРИТЕРИЙ ВАЖНОСТИ: Если сообщение < 3 букв, опечатка (н-р "л", "дд") или мусор -> is_important: false, proposed_action: "".
-    2. РАСПРЕДЕЛЕНИЕ РАБОТ:
-       - Сантехника/Вода -> Бекмуратов Серик (Слесарь).
-       - Мебель/Двери/Стулья/Парты -> Конырбаев Асет (Разнорабочий).
-       - Электрика -> Жумабаев Ерлан.
-       - Уборка -> Касымова Гульнар.
-    3. КОНТЕКСТ: Не предлагай действия из истории, если текущее сообщение не имеет смысла.
+    Ты - опытный ИИ-Директор школы. Проанализируй сообщение из чата.
     
+    ГЛАВНОЕ ПРАВИЛО: НЕ ГАЛЛЮЦИНИРУЙ. История сообщений дана ТОЛЬКО для понимания контекста. 
+    Если текущее сообщение - это новая жалоба или мусор, ЗАБУДЬ все, что было в истории. 
+    НИКОГДА не предлагай старое действие (н-р ремонт стула), если оно не упоминается прямо сейчас.
+
+    1. ВАЖНОСТЬ (is_important):
+       - true: "Сломал ногу", "Болею", "Прорыв трубы", "Замена учителя", "Сломался стул".
+       - false (мусор): "л", "о", ".", "ок", "тут типы говорят", реклама.
+
+    2. ПЕРСОНАЛ (assignee/assigned_to):
+       - Конырбаев Асет: ТОЛЬКО ОН чинит мебель, стулья, парты, двери.
+       - Бекмуратов Серик: ТОЛЬКО ОН чинит сантехнику, воду, туалеты.
+       - Завуч: Замена учителей.
+
+    3. ТРЕБОВАНИЕ К ВЫХОДУ: 
+       Если сообщение мусорное (короткое, опечатка) -> is_important ДОЛЖЕН быть false, а proposed_action ПУСТЫМ "".
+
     JSON:
     {{ 
       "role": "string", "is_important": boolean, "summary": "суть",
-      "needs_clarification": boolean, "clarification_text": "",
-      "proposed_action": "действие (только для реальных проблем)",
-      "assignee": "ФИО или отдел", "is_continuation": boolean,
-      "nutrition": {{ "is_nutrition": boolean, "sick_count": 0, "competition_count": 0 }},
+      "needs_clarification": boolean,
+      "proposed_action": "действие ИЛИ пустая строка если сообщение не важное",
+      "assignee": "ФИО или Завуч", "is_continuation": boolean,
+      "nutrition": {{ "is_nutrition": boolean, "sick_count": 0 }},
       "incident": {{
          "is_incident": boolean, "location": "где",
-         "assigned_to": "ФИО из техперсонала (напр. Конырбаев Асет)"
+         "assigned_to": "ФИО из техперсонала (например: Конырбаев Асет)"
       }}
     }}
     Отправитель: '{source_name}', Текст: '{text_body}', История: '{history_text}'
@@ -928,67 +936,106 @@ async def generate_fast(request: Request):
         is_phys = sl in phys
         pref_types = ["gym"] if is_pe else ["lab", "classroom"] if is_phys else ["classroom", "lab"]
         
-    # Define all available slots in a linear order (stable)
+    # ── SMART ALGORITHM: spread lessons evenly across days ────────────────────
+    # all_slots ordered day→time (Mon morning first)
     all_slots = [{"day": d, "time": t} for d in days for t in time_slots]
-    
+
+    # Tracker: { cls: { subj_lower: { day: count } } }
+    cls_subj_day = {}
+
     for item in queue:
         placed = 0
-        sl = item["subject"].lower()
-        is_pe = any(p in sl for p in pe)
+        target = item["hours"]          # exact count from matrix
+        sl     = item["subject"].lower()
+        is_pe  = any(p in sl for p in pe)
         is_phys = sl in phys
         pref_types = ["gym"] if is_pe else ["lab", "classroom"] if is_phys else ["classroom", "lab"]
-        
-        # We try slots in a stable linear order to fill mornings and reduce windows
-        for slot in all_slots:
-            if placed >= item["hours"]: break
+
+        # allow max 2 per day only for very heavy subjects (>5 h/week)
+        max_per_day = 2 if target > 5 else 1
+
+        # Sort slots: prefer days where subject is least placed for this class,
+        # then prefer earlier time slots in the day.
+        def slot_priority(s, _cls=item["cls"], _sl=sl):
+            already = cls_subj_day.get(_cls, {}).get(_sl, {}).get(s["day"], 0)
+            return (already, days.index(s["day"]), time_slots.index(s["time"]))
+
+        sorted_slots = sorted(all_slots, key=slot_priority)
+
+        for slot in sorted_slots:
+            if placed >= target:
+                break
             d, t = slot["day"], slot["time"]
-            
-            # Check if class is free
-            if not is_free(item["cls"], None, None, d, t): continue
-            
+
+            # Guard 1: daily subject cap for this class
+            if cls_subj_day.get(item["cls"], {}).get(sl, {}).get(d, 0) >= max_per_day:
+                continue
+
+            # Guard 2: class must be free at this slot
+            if not is_free(item["cls"], None, None, d, t):
+                continue
+
+            # ── Teacher selection ─────────────────────────────────────────────
             sel_t = None
             if item["teacher"]:
-                # Check assigned teacher
                 for gt in gen_teachers:
                     if gt["name"] == item["teacher"]:
-                        if is_free(None, None, item["teacher"], d, t) and \
-                           teacher_day_load.get(item["teacher"],{}).get(d,0) < gt["limitDay"] and \
-                           teacher_week_load.get(item["teacher"],0) < gt["limitWeek"]:
+                        if (is_free(None, None, item["teacher"], d, t) and
+                                teacher_day_load.get(item["teacher"], {}).get(d, 0) < gt["limitDay"] and
+                                teacher_week_load.get(item["teacher"], 0) < gt["limitWeek"]):
                             sel_t = item["teacher"]
                         break
             else:
-                # Find best matching teacher (who has lowest load and satisfies limits)
-                capable = [gt for gt in gen_teachers if sl in gt["lowerSubjects"] and is_free(None, None, gt["name"], d, t)]
-                capable = [gt for gt in capable if teacher_day_load.get(gt["name"],{}).get(d,0) < gt["limitDay"] and \
-                           teacher_week_load.get(gt["name"],0) < gt["limitWeek"]]
-                
+                capable = [
+                    gt for gt in gen_teachers
+                    if sl in gt["lowerSubjects"]
+                    and is_free(None, None, gt["name"], d, t)
+                    and teacher_day_load.get(gt["name"], {}).get(d, 0) < gt["limitDay"]
+                    and teacher_week_load.get(gt["name"], 0) < gt["limitWeek"]
+                ]
                 if capable:
-                    capable.sort(key=lambda x: (teacher_day_load.get(x["name"], {}).get(d, 0), teacher_week_load.get(x["name"], 0)))
+                    capable.sort(key=lambda x: (
+                        teacher_day_load.get(x["name"], {}).get(d, 0),
+                        teacher_week_load.get(x["name"], 0)
+                    ))
                     sel_t = capable[0]["name"]
-                    
-            if not sel_t: continue
-            
-            # Find best room
+
+            if not sel_t:
+                continue
+
+            # ── Room selection ────────────────────────────────────────────────
             sel_r = None
             for ptype in pref_types:
-                free_rr = [r["name"] for r in rooms if r.get("type") == ptype and is_free(None, r["name"], None, d, t)]
+                free_rr = [r["name"] for r in rooms
+                           if r.get("type") == ptype and is_free(None, r["name"], None, d, t)]
                 if free_rr:
-                    # Deterministic room choice based on room index (to keep it stable)
-                    sel_r = free_rr[0] 
+                    sel_r = free_rr[0]
                     break
-            
-            if not sel_r: continue
-            
+
+            if not sel_r:
+                continue
+
+            # ── Place lesson ──────────────────────────────────────────────────
             schedule[item["cls"]][d][t] = {
                 "subject": item["subject"],
                 "teacher": sel_t,
-                "room": sel_r
+                "room":    sel_r,
             }
             mark_busy(item["cls"], sel_r, sel_t, d, t)
+
+            cls_subj_day.setdefault(item["cls"], {}).setdefault(sl, {})
+            cls_subj_day[item["cls"]][sl][d] = cls_subj_day[item["cls"]][sl].get(d, 0) + 1
+
             total_lessons += 1
             placed += 1
 
-    
+        if placed < target:
+            conflict_reasons.append(
+                f"Класс {item['cls']}: {item['subject']} — "
+                f"размещено {placed}/{target} ч."
+            )
+            conflicts += 1
+
     return {
         "status": "success",
         "lessons_placed": total_lessons,

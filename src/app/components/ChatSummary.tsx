@@ -291,12 +291,13 @@ export function ChatSummary() {
               
               {/* Показываем карточку задачи ИИ прямо в сообщении, если она есть и не решена */}
               {(() => {
-                const matchingTasks = tasks.filter(t => 
-                  t.status === "pending" && 
-                  (t.original_message.trim() === msg.message.trim() || 
-                   t.original_message.includes(msg.message) || 
-                   msg.message.includes(t.original_message))
-                );
+                const matchingTasks = tasks.filter(t => {
+                  if (t.status !== "pending") return false;
+                  const tMsg = t.original_message.toLowerCase().trim();
+                  const mMsg = msg.message.toLowerCase().trim();
+                  return tMsg === mMsg || tMsg.includes(mMsg) || mMsg.includes(tMsg);
+                });
+
                 
                 // Берем только самую последнюю задачу по времени (она первая в списке от апи)
                 const latestTask = matchingTasks[0];
