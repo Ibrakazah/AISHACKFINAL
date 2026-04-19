@@ -912,13 +912,28 @@ async def generate_fast(request: Request):
     
     MAX_SLOTS = len(days) * len(time_slots)  # 40
     
+    def get_lent_hours_for_subject(_cls, _subj):
+        hrs = 0
+        for l in lents:
+            if _cls in l.get("parallelClasses", []):
+                s_l = l.get("subject", "").lower()
+                m_l = _subj.lower()
+                is_ent = "ұбт" in m_l or "убт" in m_l or "ент" in m_l or "по выбору" in m_l or "профиль" in m_l
+                is_senior = "10" in _cls or "11" in _cls or "12" in _cls
+                
+                if s_l == m_l:
+                    hrs += l.get("hoursPerWeek", 1)
+                elif l.get("type") == "profile" and is_ent and is_senior:
+                    hrs += l.get("hoursPerWeek", 1)
+        return hrs
+    
     # 1. Build strict assignments (highest priority)
     for t in teachers:
         if t.get("assignments"):
             for subj, cmap in t["assignments"].items():
                 for cls, hrs in cmap.items():
                     if hrs > 0:
-                        lent_hrs = sum(1 for l in lents if cls in l.get("parallelClasses", []) and l.get("subject","").lower() == subj.lower())
+                        lent_hrs = get_lent_hours_for_subject(cls, subj)
                         rem = max(0, hrs - lent_hrs)
                         if rem > 0:
                             queue.append({"cls": cls, "subject": subj, "teacher": t["name"], "hours": rem, "priority": 0})
@@ -951,7 +966,7 @@ async def generate_fast(request: Request):
 
             if strict.get(cls, {}).get(subj.lower(), 0) > 0: continue
             
-            lent_hrs = sum(1 for l in lents if cls in l.get("parallelClasses", []) and l.get("subject","").lower() == subj.lower())
+            lent_hrs = get_lent_hours_for_subject(cls, subj)
             rem = max(0, tot_hrs - lent_hrs)
             if rem > 0: queue.append({"cls": cls, "subject": subj, "teacher": None, "hours": rem, "priority": 1})
             
