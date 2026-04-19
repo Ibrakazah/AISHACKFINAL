@@ -7,7 +7,10 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-GROQ_KEY = os.getenv("GROQ_KEY")
+from dotenv import load_dotenv
+load_dotenv()
+
+GROQ_KEY = os.getenv("GROQ_KEY", "YOUR_KEY_HERE")
 client = AsyncGroq(api_key=GROQ_KEY)
 
 SYSTEM_PROMPT = """You are the Senior AI Orchestrator for 'Aqbobek Lyceum'.
