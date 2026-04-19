@@ -1,10 +1,38 @@
-import React, { useState } from "react";
-import { Wrench, Clock, MapPin, Search, User, Hammer, Lightbulb, Trash2, ShieldCheck, ChevronRight } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Wrench, Clock, MapPin, Search, User, Hammer, Lightbulb, Trash2, ShieldCheck, ChevronRight, AlertCircle, CheckCircle2 } from "lucide-react";
 import { TECH_STAFF, TECH_SCHEDULE, TECH_TIME_SLOTS, TECH_DAYS } from "../data/techStaffData";
+
+interface Incident {
+  id: string;
+  timestamp: string;
+  location: string;
+  description: string;
+  reporter: string;
+  assignedTo: string;
+  status: string;
+}
 
 export function TechnicianView() {
   const [selectedStaffId, setSelectedStaffId] = useState<number>(TECH_STAFF[0].id);
   const [selectedDay, setSelectedDay] = useState<string>("Понедельник");
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+
+  useEffect(() => {
+    const fetchIncidents = async () => {
+      try {
+        const response = await fetch("http://localhost:8000/api/v1/incidents/active");
+        if (response.ok) {
+          const data = await response.json();
+          setIncidents(data.incidents || []);
+        }
+      } catch (error) {
+        console.error("Failed to fetch incidents:", error);
+      }
+    };
+    fetchIncidents();
+    const interval = setInterval(fetchIncidents, 10000); // Polling
+    return () => clearInterval(interval);
+  }, []);
 
   const activeStaff = TECH_STAFF.find(s => s.id === selectedStaffId) || TECH_STAFF[0];
 
@@ -17,7 +45,7 @@ export function TechnicianView() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
-      {/* Header & Staff Selector */}
+      {/* Header */}
       <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-xl border border-gray-100 dark:border-slate-800">
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-8">
           <div className="flex items-center gap-6">
@@ -26,7 +54,7 @@ export function TechnicianView() {
             </div>
             <div>
               <h1 className="text-3xl font-black text-gray-900 dark:text-white uppercase tracking-tighter">Кабинет техников</h1>
-              <p className="text-gray-500 dark:text-slate-400 font-medium">Управление техническим персоналом и сервисными работами</p>
+              <p className="text-gray-500 dark:text-slate-400 font-medium">Управление персоналом и активные заявки от ИИ</p>
             </div>
           </div>
 
@@ -43,6 +71,42 @@ export function TechnicianView() {
           </div>
         </div>
       </div>
+
+      {incidents.length > 0 && (
+        <div className="bg-rose-50 dark:bg-rose-900/10 border-2 border-rose-100 dark:border-rose-900/30 rounded-[2.5rem] p-8">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 bg-white dark:bg-slate-900 rounded-2xl shadow-sm">
+              <AlertCircle className="w-6 h-6 text-rose-500 animate-pulse" />
+            </div>
+            <h3 className="text-xl font-black text-rose-950 dark:text-rose-100 uppercase tracking-tighter">СРОЧНЫЕ ВЫЗОВЫ (АКТИВНО: {incidents.length})</h3>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {incidents.map((inc) => (
+              <div key={inc.id} className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-rose-200 dark:border-rose-900/20 shadow-sm relative group overflow-hidden">
+                <div className="absolute top-0 right-0 p-4 opacity-10">
+                   <AlertCircle className="w-12 h-12 text-rose-500" />
+                </div>
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="px-2 py-1 bg-rose-500 text-white rounded-lg text-[8px] font-black tracking-widest">{inc.status.toUpperCase()}</span>
+                  <span className="text-[9px] font-bold text-gray-400 uppercase">{inc.id}</span>
+                </div>
+                <h4 className="text-base font-black text-gray-900 dark:text-white mb-2 leading-tight">{inc.description}</h4>
+                <div className="flex flex-col gap-2 mt-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-gray-600 dark:text-slate-300">
+                    <MapPin className="w-4 h-4 text-rose-400" />
+                    {inc.location}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-medium text-gray-400 dark:text-slate-500">
+                    <User className="w-4 h-4" />
+                    Сообщил: {inc.reporter}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
         {/* Staff Sidebar */}
@@ -69,7 +133,6 @@ export function TechnicianView() {
             </div>
           </div>
 
-          {/* Contact Info Card */}
           <div className="bg-gradient-to-br from-slate-900 to-indigo-950 rounded-[2rem] p-8 text-white shadow-2xl relative overflow-hidden group">
             <div className="absolute -right-10 -bottom-10 opacity-10 group-hover:scale-110 transition-all duration-700">
                <ShieldCheck className="w-40 h-40" />
@@ -143,5 +206,8 @@ export function TechnicianView() {
     </div>
   );
 }
+
+export default TechnicianView;
+
 
 export default TechnicianView;
