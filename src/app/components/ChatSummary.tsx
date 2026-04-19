@@ -290,27 +290,42 @@ export function ChatSummary() {
               <p className="text-gray-700 dark:text-slate-300 leading-relaxed font-medium text-[15px]">{msg.message}</p>
               
               {/* Показываем карточку задачи ИИ прямо в сообщении, если она есть и не решена */}
-              {tasks.filter(t => t.status === "pending" && (t.original_message.includes(msg.message) || msg.message.includes(t.original_message))).map(task => (
-                <div key={`inline-task-${task.id}`} className="mt-4 p-4 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800/50 rounded-xl flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
-                   <div>
-                     <p className="text-xs font-bold text-orange-600 dark:text-orange-400 uppercase tracking-widest mb-1 flex items-center gap-1">
-                        🤖 ИИ Предлагает действие
-                     </p>
-                     <p className="text-sm font-semibold text-gray-800 dark:text-slate-200">{task.proposed_action}</p>
-                   </div>
-                   <button 
-                      onClick={async () => {
-                        await fetch(`http://localhost:8000/api/ai-tasks/${task.id}/resolve`, {
-                          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "approve" })
-                        });
-                        fetchData();
-                      }}
-                      className="whitespace-nowrap px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm transition-transform active:scale-95"
-                   >
-                     Отправить: {task.assignee || 'Султану'}
-                   </button>
-                </div>
-              ))}
+              {(() => {
+                const matchingTasks = tasks.filter(t => 
+                  t.status === "pending" && 
+                  (t.original_message.trim() === msg.message.trim() || 
+                   t.original_message.includes(msg.message) || 
+                   msg.message.includes(t.original_message))
+                );
+                
+                // Берем только самую последнюю задачу по времени (она первая в списке от апи)
+                const latestTask = matchingTasks[0];
+                
+                if (!latestTask) return null;
+
+                return (
+                  <div key={`inline-task-${latestTask.id}`} className="mt-4 p-4 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800/50 rounded-xl flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
+                     <div>
+                       <p className="text-xs font-bold text-orange-600 dark:text-orange-400 uppercase tracking-widest mb-1 flex items-center gap-1">
+                          🤖 ИИ Предлагает действие
+                       </p>
+                       <p className="text-sm font-semibold text-gray-800 dark:text-slate-200">{latestTask.proposed_action}</p>
+                     </div>
+                     <button 
+                        onClick={async () => {
+                          await fetch(`http://localhost:8000/api/ai-tasks/${latestTask.id}/resolve`, {
+                            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "approve" })
+                          });
+                          fetchData();
+                        }}
+                        className="whitespace-nowrap px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm transition-transform active:scale-95"
+                     >
+                       Отправить: {latestTask.assignee || 'Султану'}
+                     </button>
+                  </div>
+                );
+              })()}
+
             </div>
           ))
         )}
