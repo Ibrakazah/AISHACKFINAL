@@ -208,6 +208,3 @@ export function TechnicianView() {
 }
 
 export default TechnicianView;
-
-
-export default TechnicianView;
