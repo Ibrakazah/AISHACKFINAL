@@ -296,8 +296,14 @@ export function Schedule() {
           if (newData[classKey][selectedDay]) {
             Object.keys(newData[classKey][selectedDay]).forEach(time => {
               const cell = newData[classKey][selectedDay][time];
-              if (cell && cell.teacher === selectedTeacher) {
+              // Гибкое сравнение имен (игнорируем точки и проверяем вхождение)
+              if (cell && cell.teacher && (
+                cell.teacher === selectedTeacher || 
+                cell.teacher.startsWith(selectedTeacher) || 
+                selectedTeacher.startsWith(cell.teacher)
+              )) {
                 const replacement = getFreeTeacher(cell.subject, selectedDay, time, newData, selectedTeacher);
+
                 logs.push(`${classKey} | ${time}: ${cell.teacher} → ${replacement} (${cell.subject})`);
                 newData[classKey][selectedDay][time] = {
                   ...cell,
