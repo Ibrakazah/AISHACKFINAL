@@ -279,45 +279,50 @@ export function Schedule() {
         };
 
         const getFreeTeacher = (subject: string, checkDay: string, timeSlot: string, currentData: typeof prev, excludeStr: string) => {
-          // Ищем среди ресурсов только тех, кто умеет вести этот предмет
           const qualifiedTeachers = allTeachers.filter(t => 
             TEACHER_COMPETENCIES[t]?.has(subject) && !t.toLowerCase().includes(excludeStr.toLowerCase())
           );
-
           for (const t of qualifiedTeachers) {
             if (!isTeacherBusy(t, checkDay, timeSlot, currentData)) return t;
           }
-          
           conflictsResolved++;
           return "Резерв (Предметник не найден)";
         };
 
-        const normalize = (name: string) => name.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
-        const targetNormalized = normalize(selectedTeacher);
+        const normalize = (s: string) => s.toLowerCase().replace(/[^а-яa-z0-9]/g, '').trim();
+        const targetTeacherNormalized = normalize(selectedTeacher);
+        const targetDayNormalized = normalize(selectedDay);
 
         Object.keys(newData).forEach(classKey => {
-          if (newData[classKey][selectedDay]) {
-            Object.keys(newData[classKey][selectedDay]).forEach(time => {
-              const cell = newData[classKey][selectedDay][time];
+          // Ищем день недели гибко
+          const dayKeys = Object.keys(newData[classKey] || {});
+          const matchedDay = dayKeys.find(d => normalize(d) === targetDayNormalized);
+          
+          if (matchedDay && newData[classKey][matchedDay]) {
+            Object.keys(newData[classKey][matchedDay]).forEach(time => {
+              const cell = newData[classKey][matchedDay][time];
               if (cell && cell.teacher) {
                 const teacherNormalized = normalize(cell.teacher);
-                if (teacherNormalized === targetNormalized || 
-                    teacherNormalized.includes(targetNormalized) || 
-                    targetNormalized.includes(teacherNormalized)) {
+                
+                if (teacherNormalized === targetTeacherNormalized || 
+                    teacherNormalized.includes(targetTeacherNormalized) || 
+                    targetTeacherNormalized.includes(teacherNormalized)) {
+                  
                   const replacement = getFreeTeacher(cell.subject, selectedDay, time, newData, selectedTeacher);
-
-
-                logs.push(`${classKey} | ${time}: ${cell.teacher} → ${replacement} (${cell.subject})`);
-                newData[classKey][selectedDay][time] = {
-                  ...cell,
-                  teacher: replacement,
-                  isSubstitute: true,
-                };
-                totalChanges++;
+                  logs.push(`${classKey} | ${time}: ${cell.teacher} → ${replacement}`);
+                  
+                  newData[classKey][matchedDay][time] = {
+                    ...cell,
+                    teacher: replacement,
+                    isSubstitute: true,
+                  };
+                  totalChanges++;
+                }
               }
             });
           }
         });
+
 
         setChangeLog(logs);
         if (logs.length > 0) setShowLogs(true);
