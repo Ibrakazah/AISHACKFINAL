@@ -1,7 +1,8 @@
 // Reports v2.1 — Bullying + Load + Nutrition + Timesheet
 import React, { useState } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, Users, Award, BookOpen, FileText, Bot, FileCheck, Save, ShieldAlert, Clock } from "lucide-react";
+import { TrendingUp, Users, Award, BookOpen, FileText, Bot, FileCheck, Save, ShieldAlert, Clock, Loader2 } from "lucide-react";
+import { fetchActiveSchedule, fetchTeachersList } from "../services/scheduleService";
 
 const NUTRITION_TEMPLATE = `БЛАНК ГОСУДАРСТВЕННОГО УЧРЕЖДЕНИЯ
 (Логотип школы, БИН, Адрес)
@@ -136,6 +137,46 @@ export function Reports() {
   const [teacherHours, setTeacherHours] = useState("");
 
   const [generatedReport, setGeneratedReport] = useState<string | null>(null);
+
+  const [teachersList, setTeachersList] = useState<string[]>([]);
+  const [scheduleData, setScheduleData] = useState<any>({});
+  const [isScheduleLoading, setIsScheduleLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (reportType === "timesheet" || reportType === "load") {
+      setIsScheduleLoading(true);
+      Promise.all([fetchTeachersList(), fetchActiveSchedule()]).then(([tList, sData]) => {
+        setTeachersList(tList);
+        setScheduleData(sData);
+        setIsScheduleLoading(false);
+      });
+    }
+  }, [reportType]);
+
+  React.useEffect(() => {
+    if (teacherName && scheduleData) {
+      let count = 0;
+      Object.keys(scheduleData).forEach(cls => {
+         const days = scheduleData[cls] || {};
+         Object.keys(days).forEach(d => {
+            const slots = days[d] || {};
+            Object.keys(slots).forEach(t => {
+               const cell = slots[t];
+               if (cell && cell.teacher) {
+                  const t1 = cell.teacher.toLowerCase().replace(/\s/g, '');
+                  const t2 = teacherName.toLowerCase().replace(/\s/g, '');
+                  if (t1.includes(t2) || t2.includes(t1)) {
+                     count += 1;
+                  }
+               }
+            });
+         });
+      });
+      // count = weekly hours. Multiply by 4.2 for average monthly timesheet.
+      const monthlyHours = Math.round(count * 4.2);
+      setTeacherHours(monthlyHours.toString());
+    }
+  }, [teacherName, scheduleData]);
 
   const performanceData = [
     { month: "Сен", grade: 4.2 },
@@ -461,24 +502,27 @@ export function Reports() {
                       {reportType === "timesheet" ? (
                         <>
                           <div>
-                            <label className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1 block">ФИО Преподавателя</label>
-                            <input 
-                              type="text" 
-                              value={teacherName}
-                              onChange={(e) => setTeacherName(e.target.value)}
-                              className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
-                              placeholder="Например, Аскар Ахметов"
-                            />
+                            <label className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1 block">Выберите Преподавателя</label>
+                            {isScheduleLoading ? (
+                                <div className="text-indigo-400 flex items-center gap-2 py-3 px-4 bg-black/50 border border-indigo-500/30 rounded-xl text-sm"><Loader2 className="w-4 h-4 animate-spin"/> Синхронизация расписания...</div>
+                            ) : (
+                              <select 
+                                value={teacherName}
+                                onChange={(e) => setTeacherName(e.target.value)}
+                                className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono appearance-none"
+                              >
+                                <option value="" disabled>-- Выберите преподавателя --</option>
+                                {teachersList.map(t => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                            )}
                           </div>
-                          <div>
-                            <label className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1 block">Отработанно часов</label>
-                            <input 
-                              type="number" 
-                              value={teacherHours}
-                              onChange={(e) => setTeacherHours(e.target.value)}
-                              className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
-                              placeholder="Например, 134"
-                            />
+                          <div className="bg-indigo-500/20 rounded-xl p-4 border border-indigo-500/30">
+                            <p className="text-indigo-300 text-[10px] font-black uppercase tracking-widest mb-2 flex items-center gap-2">⏱ Фактические часы работы (по матрице)</p>
+                            <div className="flex items-center gap-3">
+                              <div className="text-3xl font-black text-white">{teacherHours || "0"}</div>
+                              <div className="text-xs text-indigo-200 font-medium">часов<br/>в месяц</div>
+                            </div>
+                            <p className="text-[9px] text-indigo-400 uppercase tracking-widest font-bold mt-3">Автоматически рассчитано AQBOBEK AI на базе активного расписания</p>
                           </div>
                         </>
                       ) : reportType === "bullying" ? (
