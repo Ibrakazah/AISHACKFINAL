@@ -183,6 +183,13 @@ export function TechnicianView() {
               {TECH_TIME_SLOTS.map(time => {
                 const dayTasks = TECH_SCHEDULE[selectedDay]?.[time] || [];
                 const staffTask = dayTasks.find(t => t.staffId === selectedStaffId);
+                
+                // Find dynamic incidents assigned to this specific staff member
+                // We'll show them in the current/relevant time slot or as additional tasks
+                const personalIncidents = incidents.filter(inc => 
+                  inc.assignedTo.includes(activeStaff.name.split(' ')[0]) || 
+                  inc.assignedTo.includes(activeStaff.name.split(' ')[1])
+                );
 
                 return (
                   <div key={time} className="p-8 hover:bg-gray-50 dark:hover:bg-slate-800/20 transition-all flex flex-col md:flex-row gap-6">
@@ -190,35 +197,49 @@ export function TechnicianView() {
                       <div className="text-xs font-black text-gray-400 dark:text-slate-600 uppercase tracking-widest">{time}</div>
                     </div>
                     
-                    <div className="flex-1">
+                    <div className="flex-1 space-y-4">
+                      {/* Dynamic AI Incidents for this person */}
+                      {time === "08:00–09:00" && personalIncidents.length > 0 && personalIncidents.map(inc => (
+                        <div key={inc.id} className="bg-rose-500 text-white rounded-2xl p-6 shadow-lg shadow-rose-500/20 animate-pulse border-2 border-rose-400">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-sm font-black uppercase tracking-widest">🚨 Срочная задача от ИИ</h4>
+                            <span className="text-[10px] font-black">{inc.id}</span>
+                          </div>
+                          <div className="text-lg font-black mb-4">{inc.description}</div>
+                          <div className="flex items-center gap-4 text-xs font-bold opacity-90">
+                            <div className="flex items-center gap-1"><MapPin className="w-4 h-4" /> {inc.location}</div>
+                            <div className="flex items-center gap-1"><Clock className="w-4 h-4" /> СЕЙЧАС</div>
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Static Tasks */}
                       {staffTask ? (
                         <div className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-2xl p-6 shadow-sm group hover:border-indigo-500/50 transition-all">
                           <div className="flex items-center justify-between mb-4">
                             <h4 className="text-lg font-black text-gray-900 dark:text-white leading-tight">{staffTask.task}</h4>
-                            <span className="px-3 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-[9px] font-black uppercase tracking-widest">В работе</span>
+                            <span className="px-3 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg text-[9px] font-black uppercase tracking-widest">Запланировано</span>
                           </div>
                           <div className="flex items-center gap-4">
                             <div className="flex items-center gap-2 text-gray-500 dark:text-slate-400 text-xs font-bold">
                               <MapPin className="w-4 h-4 text-rose-500" />
                               {staffTask.location}
                             </div>
-                            {staffTask.note && (
-                              <div className="flex items-center gap-2 text-gray-400 dark:text-slate-500 text-xs italic">
-                                — {staffTask.note}
-                              </div>
-                            )}
                           </div>
                         </div>
                       ) : (
-                        <div className="h-20 border-2 border-dashed border-gray-100 dark:border-slate-800/40 rounded-2xl flex items-center justify-center opacity-30">
-                          <span className="text-[10px] font-black uppercase tracking-widest text-gray-300 dark:text-slate-700">Окно / Свободное дежурство</span>
-                        </div>
+                        !personalIncidents.length && (
+                          <div className="h-20 border-2 border-dashed border-gray-100 dark:border-slate-800/40 rounded-2xl flex items-center justify-center opacity-30">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-gray-300 dark:text-slate-700">Окно / Свободное дежурство</span>
+                          </div>
+                        )
                       )}
                     </div>
                   </div>
                 );
               })}
             </div>
+
           </div>
         </div>
       </div>
