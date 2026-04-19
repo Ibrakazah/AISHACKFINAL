@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import requests
+import httpx
 import uvicorn
 import sqlite3
 import json
@@ -18,7 +19,7 @@ app.add_middleware(
 )
 
 # 🔑 API Config
-API_KEY = os.environ.get("GROQ_API_KEY", "")  # Set GROQ_API_KEY env variable
+API_KEY = os.getenv("GROQ_API_KEY", "YOUR_KEY_HERE")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 DB_PATH = "server/schedule.db"
@@ -43,6 +44,34 @@ class ConnectionManager:
                 print(f"WebSocket send error: {e}")
 
 manager = ConnectionManager()
+
+def init_db():
+    os.makedirs("server", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    # Ensure tables exist
+    cur.execute("CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY, name TEXT UNIQUE)")
+    cur.execute("CREATE TABLE IF NOT EXISTS teachers (id INTEGER PRIMARY KEY, name TEXT UNIQUE)")
+    cur.execute("CREATE TABLE IF NOT EXISTS rooms (id INTEGER PRIMARY KEY, name TEXT UNIQUE)")
+    cur.execute("CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY, grade TEXT, parallel TEXT, UNIQUE(grade, parallel))")
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_cells (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_name TEXT,
+            day TEXT,
+            time_slot TEXT,
+            subject TEXT,
+            teacher TEXT,
+            room TEXT,
+            is_lent BOOLEAN,
+            lent_type TEXT,
+            lent_group TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 # 📱 WhatsApp status tracking
 ALLOWED_WHATSAPP_GROUPS = ["akbobek Uralsk", "Султан"] 
@@ -74,6 +103,10 @@ def startup_event():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    try:
+        cur.execute("ALTER TABLE ai_tasks ADD COLUMN assignee TEXT DEFAULT 'Султан'")
+    except sqlite3.OperationalError:
+        pass # Column already exists
     cur.execute('''
         CREATE TABLE IF NOT EXISTS nutrition_reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +128,13 @@ def startup_event():
             reporter TEXT NOT NULL,
             assigned_to TEXT NOT NULL,
             status TEXT DEFAULT 'open'
+        )
+    ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS schedule_matrix (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT NOT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
@@ -183,9 +223,12 @@ async def clear_messages():
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute("DELETE FROM chat_messages")
+        cur.execute("DELETE FROM ai_tasks")
+        
+        # We can also clear the matrix if we want, but usually 'clear messages' is just chat.
         conn.commit()
         conn.close()
-        return {"status": "success", "message": "All messages cleared"}
+        return {"status": "success", "message": "All messages & tasks cleared"}
     except Exception as e:
         print(f"Error clearing messages: {e}")
         return {"status": "error", "message": str(e)}
@@ -202,29 +245,32 @@ async def internal_webhook(request: Request):
     
     source_name = group_name if (is_group and group_name) else user_name
     
-    # Strict filtering for allowed sources only
-    allowed_sources = ["Султан", "infvoi"]
-    if source_name not in allowed_sources:
-        print(f"Message from {source_name} filtered. Allowed: {allowed_sources}.")
-        return {"status": "filtered"}
+    # Strict filtering for allowed sources removed to receive from everyone
+    # allowed_sources = ["Султан", "infvoi"]
+    # if source_name not in allowed_sources:
+    #     print(f"Message from {source_name} filtered. Allowed: {allowed_sources}.")
+    #     return {"status": "filtered"}
     
+
     if wa_paused:
         print("Webhook received but WA is paused. Ignoring.")
         return {"status": "paused"}
         
-    # Get recent history to provide context for AI (especially for clarifications)
+    # Get global recent history to provide full context across all chats
     conn_hist = sqlite3.connect(DB_PATH)
     cur_hist = conn_hist.cursor()
-    cur_hist.execute("SELECT message FROM chat_messages WHERE sender = ? ORDER BY timestamp DESC LIMIT 5", (source_name,))
-    recent_history = cur_hist.fetchall()
+    cur_hist.execute("SELECT sender, message FROM chat_messages ORDER BY timestamp DESC LIMIT 15")
+    global_recent = cur_hist.fetchall()
     conn_hist.close()
-    history_text = "\n".join([row[0] for row in reversed(recent_history)]) if recent_history else "Нет предыдущих сообщений."
+    
+    # Format the context so the bot knows who is talking about what (e.g. mentions of Adlet 9a)
+    history_text = "\n".join([f"[{row[0]}]: {row[1]}" for row in reversed(global_recent)]) if global_recent else "Нет контекста."
         
     # Analyze message with Groq AI for Summary & Importance
     prompt = f"""
     Ты - умный ИИ-Директор школы. Проанализируй следующее сообщение из школьного чата.
-    Источник/Группа/Человек: '{source_name}'
-    Контекст (последние 5 сообщений от него): '{history_text}'
+    Текущий отправитель: '{source_name}'
+    Общий контекст чата (последние 15 сообщений): '{history_text}'
     Текущее сообщение: '{text_body}'
     
     Задачи: 
@@ -232,9 +278,10 @@ async def internal_webhook(request: Request):
     2. Оцени важность (is_important: true/false). Важное: инциденты, ЧП, запросы документов (приказов, отчетов), жалобы, отсутствие на работе.
     3. Выдели СУТЬ в одно предложение (summary) если это важно.
     4. ДИНАМИЧНОЕ УПРАВЛЕНИЕ (самое главное): 
-       - РАБОТА С ИНЦИДЕНТАМИ: Если это сообщение о новой проблеме и НЕ ХВАТАЕТ данных -> задай вопрос отправителю (needs_clarification: true). НО если отправитель прямо или косвенно дает понять, что ОН НЕ ЗНАЕТ деталей (н-р: "не знаю где они"), ХВАТИТ у него спрашивать! Установи needs_clarification: false, и сгенерируй proposed_action для ПЕРСОНАЛА (например: "Отправить охранника на поиски").
-       - ЗАПРОСЫ ДОКУМЕНТОВ/ДАННЫХ: Если пользователь просит отправить ему файл, приказ (н-р №76, №130) или отчет, НЕ задавай уточняющих вопросов о старых інцидентах. Просто установи needs_clarification: false и предложи действие (proposed_action: "Предоставить доступ к документу / Отправить файл").
-    5. РАЗДЕЛЕНИЕ КОНТЕКСТА (очень важно): Сравни с контекстом. Является ли текущее сообщение ПРЯМЫМ продолжением предыдущей проблемы? Если тема РЕЗКО поменялась (например, сначала говорили про посторонних, а теперь просят приказ или жалуются на столовую) — это НОВАЯ тема. Обязательно ставь is_continuation: false. НЕ пытайся искать связь там, где ее нет!
+       - НИКОГДА НЕ ЗАДАВАЙ УТОЧНЯЮЩИХ ВОПРОСОВ, если сообщение НЕ важное! Если is_important: false, всегда ставь needs_clarification: false. Уточняй только критические ЧП и инциденты.
+       - РАБОТА С ИНЦИДЕНТАМИ: Если это сообщение о новой проблеме и НЕ ХВАТАЕТ данных -> задай вопрос отправителю (needs_clarification: true). НО если отправитель прямо или косвенно дает понять, что ОН НЕ ЗНАЕТ деталей, ХВАТИТ у него спрашивать! Установи needs_clarification: false, и сгенерируй proposed_action.
+       - ЗАПРОСЫ ДОКУМЕНТОВ/ДАННЫХ: Не задавай уточняющих вопросов о старых инцидентах. Просто установи needs_clarification: false и предложи действие.
+    5. РАЗДЕЛЕНИЕ КОНТЕКСТА (очень важно): Сравни с контекстом. Является ли текущее сообщение ПРЯМЫМ продолжением предыдущей проблемы? Если тема РЕЗКО поменялась — это НОВАЯ тема. Обязательно ставь is_continuation: false. НЕ пытайся искать связь там, где ее нет!
     
     Верни чистый JSON без маркдауна:
     {{ 
@@ -244,6 +291,7 @@ async def internal_webhook(request: Request):
       "needs_clarification": boolean,
       "clarification_text": "вопрос или пустая",
       "proposed_action": "действие или пустая",
+      "assignee": "КОМУ отправить задачу (например: Султан, Родители ученика (ФИО), Виновник (ФИО), Завуч)",
       "is_continuation": boolean,
       "nutrition": {{
          "is_nutrition": boolean,
@@ -283,6 +331,7 @@ async def internal_webhook(request: Request):
         needs_clarification = analysis.get("needs_clarification", False)
         clarification_text = analysis.get("clarification_text", "").strip()
         proposed_action = analysis.get("proposed_action", "").strip()
+        assignee = analysis.get("assignee", "Султан").strip()
         is_continuation = analysis.get("is_continuation", False)
 
         nutrition = analysis.get("nutrition", {})
@@ -294,21 +343,25 @@ async def internal_webhook(request: Request):
             
         # Автоматическое уточнение из ИИ (если нет нужных данных, отправляем ответ в WhatsApp)
         if needs_clarification and clarification_text:
-            try:
-                requests.post(f"{WA_SERVICE_URL}/send", json={"to": from_id, "text": clarification_text}, timeout=5)
-                # Дописываем к тексту то, что ИИ задал уточняющий вопрос
-                final_text += f"\n[Бот запросил уточнение: '{clarification_text}']"
-            except Exception as auto_reply_err:
-                print(f"Failed to send auto-reply clarification: {auto_reply_err}")
+            # ИИ отвечает только в личные сообщения (не пишет в группы)
+            if not is_group:
+                try:
+                    requests.post(f"{WA_SERVICE_URL}/send", json={"to": from_id, "text": clarification_text}, timeout=5)
+                    # Дописываем к тексту то, что ИИ задал уточняющий вопрос
+                    final_text += f"\n[Бот запросил уточнение в ЛС: '{clarification_text}']"
+                except Exception as auto_reply_err:
+                    print(f"Failed to send auto-reply clarification: {auto_reply_err}")
+            else:
+                final_text += f"\n[Бот хотел задать уточнение, но проигнорировал группу: '{clarification_text}']"
                 
         # Если есть предложенное действие, сохраняем в ai_tasks
         if proposed_action and not needs_clarification:
             conn_tasks = sqlite3.connect(DB_PATH)
             cur_tasks = conn_tasks.cursor()
             cur_tasks.execute('''
-                INSERT INTO ai_tasks (source, original_message, proposed_action, status)
-                VALUES (?, ?, ?, 'pending')
-            ''', (source_name, text_body, proposed_action))
+                INSERT INTO ai_tasks (source, original_message, proposed_action, status, assignee)
+                VALUES (?, ?, ?, 'pending', ?)
+            ''', (source_name, text_body, proposed_action, assignee))
             task_id = cur_tasks.lastrowid
             
             if incident and incident.get("is_incident"):
@@ -344,6 +397,20 @@ async def internal_webhook(request: Request):
             }
             await manager.broadcast({"type": "NEW_AI_TASK", "data": task_obj})
             
+            # --- АВТОМАТИЧЕСКОЕ ОПОВЕЩЕНИЕ СООТВЕТСТВУЮЩЕГО ПЕРСОНАЛА ---
+            try:
+                if incident and incident.get("is_incident"):
+                    target = incident.get("assigned_to", "Завхоз")
+                    notif_text = f"📢 *Новая заявка: {incident.get('location', 'Школа')}*\n\n{summary or text_body}\n\nПожалуйста, отработайте как можно скорее."
+                    requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target, "text": notif_text}, timeout=5)
+                
+                elif nutrition and nutrition.get("is_nutrition"):
+                    # Оповещаем Адиля о новых данных по питанию
+                    notif_text = f"🍎 *Обновление по питанию:* {source_name} сообщил о {nutrition.get('sick_count', 0)} болеющих."
+                    requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Adil", "text": notif_text}, timeout=5)
+            except Exception as e:
+                print(f"Failed to auto-notify: {e}")
+
             conn_tasks.close()
             
     except Exception as e:
@@ -412,18 +479,17 @@ async def resolve_ai_task(task_id: int, request: Request):
     conn.commit()
     conn.close()
     
-    if action == "approve":
-        # Отправляем задачу напрямую контакту "Султан" через WhatsApp
+        # Отправляем сообщение нужному адресату
         try:
-            # Получаем детали задачи
             tasks_data = query_db("SELECT * FROM ai_tasks WHERE id = ?", (task_id,), one=True)
             if tasks_data:
-                msg_text = f"🛠️ *Новая задача от Интеллект-Системы:*\n\nИсточник: {tasks_data['source']}\nДетали: {tasks_data['proposed_action']}\n\nОригинал: {tasks_data['original_message']}"
-                requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": "Султан", "text": msg_text}, timeout=10)
+                target_assignee = tasks_data.get('assignee', 'Султан')
+                msg_text = f"🛠️ *Новая задача/Уведомление от ИИ-Директора:*\n\nКому: {target_assignee}\nИсточник: {tasks_data['source']}\nДетали: {tasks_data['proposed_action']}\n\nОригинал: {tasks_data['original_message']}"
+                requests.post(f"{WA_SERVICE_URL}/send-contact", json={"contactName": target_assignee, "text": msg_text}, timeout=10)
         except Exception as e:
-            print(f"Failed to send task to Sultan: {e}")
+            print(f"Failed to send task to {target_assignee}: {e}")
             
-        return {"status": "approved", "message": "Задача выполнена и отправлена Султану"}
+        return {"status": "approved", "message": f"Задача выполнена и отправлена адресату: {tasks_data.get('assignee', 'Султан')}"}
     else:
         return {"status": "rejected", "message": "Задача отклонена"}
 
@@ -468,128 +534,533 @@ async def get_active_incidents():
             })
     return {"incidents": res}
 
-@app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
-    try:
-        content = await file.read()
-        headers = {"Authorization": f"Bearer {API_KEY}"}
-        files = {"file": (file.filename or "audio.webm", content, file.content_type or "audio/webm")}
-        data = {"model": "whisper-large-v3"}
+@app.get("/api/matrix")
+async def get_matrix():
+    row = query_db("SELECT data FROM schedule_matrix ORDER BY updated_at DESC LIMIT 1", one=True)
+    if row and row["data"]:
+        import json
+        try:
+            return json.loads(row["data"])
+        except:
+            return {}
+    return {}
 
-        response = requests.post(WHISPER_URL, headers=headers, files=files, data=data)
-        if response.status_code != 200:
-            raise Exception(f"Groq Whisper Error: {response.text}")
-        return {"success": True, "text": response.json().get("text", "").strip()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/matrix")
+async def save_matrix(request: Request):
+    data = await request.json()
+    import json
+    data_str = json.dumps(data)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    # Update or insert
+    cur.execute("SELECT id FROM schedule_matrix LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        cur.execute("UPDATE schedule_matrix SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (data_str, row[0]))
+    else:
+        cur.execute("INSERT INTO schedule_matrix (data) VALUES (?)", (data_str,))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}
 
-@app.post("/process-command")
-async def process_command(command: str = Body(..., embed=True)):
-    """
-    Глобальный обработчик команд директора через Groq.
-    Полностью заменяет старую логику Gemini.
-    """
+@app.post("/api/generate-fast")
+async def generate_fast(request: Request):
+    data = await request.json()
+    matrix = data.get("matrix", {})
+    lents = data.get("lents", [])
+    
+    import time
+    import random
+    import re
+    
+    t0 = time.time()
+    schedule = {}
+    conflict_reasons = []
+    
+    classes = matrix.get("classes", [])
+    subjects = matrix.get("subjects", [])
+    teachers = matrix.get("teachers", [])
+    rooms = matrix.get("rooms", [])
+    
+    days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
+    time_slots = ["08:00-08:45", "09:05-09:50", "10:10-10:55", "11:00-11:45", "11:50-12:35", "13:05-13:50", "14:20-15:00", "15:05-15:45"]
+    
+    for cls in classes:
+        schedule[cls] = {d: {} for d in days}
+        
+    for t in teachers:
+        if t.get("assignments"):
+            for subj, class_map in t["assignments"].items():
+                for cls, hours in class_map.items():
+                    if cls not in classes:
+                        classes.append(cls)
+                        schedule[cls] = {d: {} for d in days}
+                        
+    teacher_busy = {}
+    room_busy = {}
+    class_busy = {}
+    teacher_day_load = {}
+    teacher_week_load = {}
+    
+    # New: handle explicit unavailability
+    unavail_t = data.get("unavailableTeachers", {}) # { "TeacherName": ["Понедельник", ... ] }
+    unavail_r = data.get("unavailableRooms", {})    # { "RoomName": ["Понедельник", ... ] }
+
+    def mark_busy(c, r, tc, d, tm):
+        if c: class_busy.setdefault(c, {}).setdefault(d, {})[tm] = True
+        if r: room_busy.setdefault(r, {}).setdefault(d, {})[tm] = True
+        if tc: 
+            teacher_busy.setdefault(tc, {}).setdefault(d, {})[tm] = True
+            teacher_day_load.setdefault(tc, {})[d] = teacher_day_load.get(tc, {}).get(d, 0) + 1
+            teacher_week_load[tc] = teacher_week_load.get(tc, 0) + 1
+            
+    def is_free(c, r, tc, d, tm):
+        # Check global busy maps
+        if c and class_busy.get(c, {}).get(d, {}).get(tm): return False
+        if r and room_busy.get(r, {}).get(d, {}).get(tm): return False
+        if tc and teacher_busy.get(tc, {}).get(d, {}).get(tm): return False
+        
+        # Check explicit unavailability (sick days / maintenance)
+        if tc and d in unavail_t.get(tc, []): return False
+        if r and d in unavail_r.get(r, []): return False
+        
+        return True
+
+    total_lessons = 0
+    conflicts = 0
+    lents_placed = 0
+    
+    for lent in lents:
+        p_classes = lent.get("parallelClasses", [])
+        grps = lent.get("groups", 1)
+        gnames = lent.get("groupNames", [])
+        lent_t = lent.get("teachers", [])
+        lent_r = lent.get("rooms", [])
+        lent_type = lent.get("type", "level")
+        group_data = lent.get("groupData", [])
+        lent_id = lent.get("id")
+        
+        # 1. Линейный поиск общего "окна" для всех участников ленты
+        found_slot = None
+        for d in days:
+            for t in time_slots:
+                can_place = True
+                if lent_type == "profile":
+                    for cls in p_classes:
+                        if not is_free(cls, None, None, d, t): 
+                            can_place = False
+                            break
+                    if not can_place: continue
+                    for gd in group_data:
+                        if gd.get("room") and not is_free(None, gd.get("room"), None, d, t): can_place = False; break
+                        if gd.get("teacher") and not is_free(None, None, gd.get("teacher"), d, t): can_place = False; break
+                else:
+                    for gi in range(grps):
+                        teacher = lent_t[gi] if gi < len(lent_t) else ""
+                        room = lent_r[gi] if gi < len(lent_r) else ""
+                        assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
+                        for cls in assigned:
+                            if not is_free(cls, room, teacher, d, t):
+                                can_place = False
+                                break
+                        if not can_place: break
+                
+                if can_place:
+                    found_slot = (d, t)
+                    break
+            if found_slot: break
+            
+        if not found_slot:
+            conflicts += 1
+            print(f"Внимание: Не удалось найти слот для ленты {lent_id}")
+            continue
+            
+        fd, ft = found_slot
+        
+        # 2. Фактическое размещение в найденный слот (fd, ft)
+        if lent_type == "profile":
+            all_s = []
+            all_r = []
+            all_t = []
+            for gd in group_data:
+                if gd.get("subject"): all_s.append(gd["subject"])
+                if gd.get("room"): all_r.append(gd["room"])
+                if gd.get("teacher"): all_t.append(gd["teacher"])
+            
+            agg_subject = " / ".join(all_s) if all_s else lent.get("subject", "")
+            agg_room = " / ".join(all_r) if all_r else "..."
+            agg_teacher = " / ".join(all_t) if all_t else "Учителя"
+            
+            for cls in p_classes:
+                schedule[cls][fd][ft] = {
+                    "subject": agg_subject,
+                    "teacher": agg_teacher,
+                    "room": agg_room,
+                    "isLent": True,
+                    "lentType": "profile",
+                    "lentId": lent_id
+                }
+            for gd in group_data:
+                # В профиле кабинеты и учителя не привязаны к конкретному классу, но заняты на это время
+                for cls in p_classes: mark_busy(None, gd.get("room"), gd.get("teacher"), fd, ft)
+                
+            total_lessons += len(p_classes)
+        else:
+            for gi in range(grps):
+                teacher = lent_t[gi] if gi < len(lent_t) else ""
+                room = lent_r[gi] if gi < len(lent_r) else ""
+                gname = gnames[gi] if gi < len(gnames) else f"Группа {gi+1}"
+                assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
+                
+                for cls in assigned:
+                    schedule[cls][fd][ft] = {
+                        "subject": lent.get("subject", "Ағылшын тілі"),
+                        "teacher": teacher,
+                        "room": room,
+                        "isLent": True,
+                        "lentType": "level",
+                        "lentGroup": gname,
+                        "lentId": lent_id
+                    }
+                    mark_busy(cls, room, teacher, fd, ft)
+                    total_lessons += 1
+        lents_placed += 1
+        
+    queue = []
+    strict = {}
+    
+    # Count how many slots each class already consumed by lents
+    class_used_slots = {}
+    for cls in classes:
+        count = 0
+        for d in days:
+            for tm in time_slots:
+                if class_busy.get(cls, {}).get(d, {}).get(tm):
+                    count += 1
+        class_used_slots[cls] = count
+    
+    MAX_SLOTS = len(days) * len(time_slots)  # 40
+    
+    # 1. Build strict assignments (highest priority)
+    for t in teachers:
+        if t.get("assignments"):
+            for subj, cmap in t["assignments"].items():
+                for cls, hrs in cmap.items():
+                    if hrs > 0:
+                        lent_hrs = sum(1 for l in lents if cls in l.get("parallelClasses", []) and l.get("subject","").lower() == subj.lower())
+                        rem = max(0, hrs - lent_hrs)
+                        if rem > 0:
+                            queue.append({"cls": cls, "subject": subj, "teacher": t["name"], "hours": rem, "priority": 0})
+                            strict.setdefault(cls, {})[subj.lower()] = strict.get(cls, {}).get(subj.lower(), 0) + rem
+                            
+    # 2. Build generic subjects (lower priority)
+    for cls in classes:
+        for subj_obj in subjects:
+            subj = subj_obj.get("subject", "")
+            hpw = subj_obj.get("hoursPerWeek", 0)
+            
+            m = re.search(r"\d+", cls)
+            grade = m.group(0) if m else "7"
+            
+            tot_hrs = hpw.get(grade, 0) if isinstance(hpw, dict) else hpw
+            if strict.get(cls, {}).get(subj.lower(), 0) > 0: continue
+            
+            lent_hrs = sum(1 for l in lents if cls in l.get("parallelClasses", []) and l.get("subject","").lower() == subj.lower())
+            rem = max(0, tot_hrs - lent_hrs)
+            if rem > 0: queue.append({"cls": cls, "subject": subj, "teacher": None, "hours": rem, "priority": 1})
+            
+    # Sort: strict first (priority=0), then by hours descending, then alphabetically for stability
+    queue.sort(key=lambda x: (x["priority"], -x["hours"], x["cls"], x["subject"]))
+    
+    # --- CAP: trim queue so each class doesn't exceed MAX_SLOTS ---
+    class_planned = {}  # total planned hours per class
+    for item in queue:
+        class_planned.setdefault(item["cls"], 0)
+        class_planned[item["cls"]] += item["hours"]
+    
+    trimmed_queue = []
+    class_budget = {cls: MAX_SLOTS - class_used_slots.get(cls, 0) for cls in classes}
+    overflow_warnings = []
+    
+    for item in queue:
+        cls = item["cls"]
+        budget = class_budget.get(cls, MAX_SLOTS)
+        if budget <= 0:
+            overflow_warnings.append(f"Класс {cls}: {item['subject']} ({item['hours']} ч.) — не вошло в сетку (макс. {MAX_SLOTS} уроков/неделю).")
+            continue
+        if item["hours"] <= budget:
+            trimmed_queue.append(item)
+            class_budget[cls] = budget - item["hours"]
+        else:
+            # Partial fit
+            trimmed_queue.append({**item, "hours": budget})
+            overflow_warnings.append(f"Класс {cls}: {item['subject']} ({item['hours'] - budget} ч. из {item['hours']}) — обрезано до лимита сетки.")
+            class_budget[cls] = 0
+    
+    queue = trimmed_queue
+    
+    gen_teachers = []
+    for t in teachers:
+        gen_teachers.append({
+            "name": t.get("name"),
+            "lowerSubjects": [s.lower() for s in t.get("subjects", [])],
+            "limitDay": t.get("maxHoursPerDay", 6),
+            "limitWeek": t.get("maxHoursPerWeek", 40)
+        })
+        
+    phys = ["физика", "химия", "биология"]
+    pe = ["дене шынықтыру", "физкультура", "дене тәрбиесі", "дене шынықтыру: спорттық ойындар"]
+    
+    for item in queue:
+        placed = 0
+        sl = item["subject"].lower()
+        is_pe = any(p in sl for p in pe)
+        is_phys = sl in phys
+        pref_types = ["gym"] if is_pe else ["lab", "classroom"] if is_phys else ["classroom", "lab"]
+        
+    # Define all available slots in a linear order (stable)
+    all_slots = [{"day": d, "time": t} for d in days for t in time_slots]
+    
+    for item in queue:
+        placed = 0
+        sl = item["subject"].lower()
+        is_pe = any(p in sl for p in pe)
+        is_phys = sl in phys
+        pref_types = ["gym"] if is_pe else ["lab", "classroom"] if is_phys else ["classroom", "lab"]
+        
+        # We try slots in a stable linear order to fill mornings and reduce windows
+        for slot in all_slots:
+            if placed >= item["hours"]: break
+            d, t = slot["day"], slot["time"]
+            
+            # Check if class is free
+            if not is_free(item["cls"], None, None, d, t): continue
+            
+            sel_t = None
+            if item["teacher"]:
+                # Check assigned teacher
+                for gt in gen_teachers:
+                    if gt["name"] == item["teacher"]:
+                        if is_free(None, None, item["teacher"], d, t) and \
+                           teacher_day_load.get(item["teacher"],{}).get(d,0) < gt["limitDay"] and \
+                           teacher_week_load.get(item["teacher"],0) < gt["limitWeek"]:
+                            sel_t = item["teacher"]
+                        break
+            else:
+                # Find best matching teacher (who has lowest load and satisfies limits)
+                capable = [gt for gt in gen_teachers if sl in gt["lowerSubjects"] and is_free(None, None, gt["name"], d, t)]
+                capable = [gt for gt in capable if teacher_day_load.get(gt["name"],{}).get(d,0) < gt["limitDay"] and \
+                           teacher_week_load.get(gt["name"],0) < gt["limitWeek"]]
+                
+                if capable:
+                    capable.sort(key=lambda x: (teacher_day_load.get(x["name"], {}).get(d, 0), teacher_week_load.get(x["name"], 0)))
+                    sel_t = capable[0]["name"]
+                    
+            if not sel_t: continue
+            
+            # Find best room
+            sel_r = None
+            for ptype in pref_types:
+                free_rr = [r["name"] for r in rooms if r.get("type") == ptype and is_free(None, r["name"], None, d, t)]
+                if free_rr:
+                    # Deterministic room choice based on room index (to keep it stable)
+                    sel_r = free_rr[0] 
+                    break
+            
+            if not sel_r: continue
+            
+            schedule[item["cls"]][d][t] = {
+                "subject": item["subject"],
+                "teacher": sel_t,
+                "room": sel_r
+            }
+            mark_busy(item["cls"], sel_r, sel_t, d, t)
+            total_lessons += 1
+            placed += 1
+
+    
+    return {
+        "status": "success",
+        "lessons_placed": total_lessons,
+        "schedule": schedule
+    }
+
+@app.post("/api/ai/command")
+async def process_command(cmd: dict):
+    command = cmd.get("text", "")
     try:
-        # Получаем данные из БД для осознанного ответа
         teachers = [r['name'] for r in query_db("SELECT name FROM teachers")]
         
         prompt = f"""
-        Ты — интеллектуальный помощник системы управления школой. Твоя роль: парсить команды директора в JSON.
-        
-        КОНТЕКСТ ШКОЛЫ:
-        Список учителей: {', '.join(teachers)}
-        
-        ПРАВИЛА НАВИГАЦИИ (route):
-        - "/schedule" -> замена учителей, расписание, уроки, отсутствие.
-        - "/reports" -> любые отчеты, статистика, посещаемость, питание.
-        - "/chat-summary" -> сообщения, чаты, переписка.
-        - "/suggestions" -> жалобы, идеи, предложения.
-        - "/calendar" -> мероприятия, встречи в календаре.
-        - "/" -> общие задачи.
+        Ты — интеллектуальный директорский помощник 'Aqbobek Intelligence'. 
+        Твоя задача — понимать команды директора и преобразовывать их в действия.
 
-        ОТВЕЧАЙ ТОЛЬКО ЧИСТЫМ JSON.
-        
-        JSON Format:
+        КОНТЕКСТ:
+        - Список учителей: {', '.join(teachers)}
+        - Доступные платформы: WhatsApp.
+        - Основные контакты: 'Adil' (Завуч/Кураторы), 'Султан' (Хоз. часть).
+
+        ВОЗМОЖНЫЕ ДЕЙСТВИЯ (intents):
+        1. "send_message" -> если просят написать, отправить сообщение, связаться.
+        2. "schedule_change" -> замены, отмена уроков, перенос.
+        3. "report_request" -> статистика, питание, посещаемость.
+        4. "calendar_event" -> встречи, мероприятия, совещания.
+        5. "navigation" -> просто перейти на страницу (расписание, отчеты и т.д.).
+
+        JSON ФОРМАТ ОТВЕТА (строго):
         {{
-          "intent": "schedule" | "reports" | "chat" | "suggestions" | "calendar" | "tasks" | "send_message" | "unknown",
-          "route": "string",
-          "sectionName": "string (на русском)",
-          "confidence": number,
-          "summary": "краткое описание 1 предложение",
-          "detailedUnderstanding": "подробный разбор задачи",
+          "intent": "send_message" | "schedule_change" | "report_request" | "calendar_event" | "navigation",
+          "summary": "Краткое описание того, что я понял (1 предложение)",
+          "route": "/schedule" | "/reports" | "/calendar" | "/chat-summary" | "/",
           "entities": {{
-            "teacherName": "string",
-            "reportNumber": "string",
-            "className": "string",
-            "topic": "string",
-            "targetGroup": "string (имя группы в WhatsApp, например 'Техники' или 'Учителя')",
-            "messageText": "string (текст сообщения для отправки)"
+            "target": "Имя или группа",
+            "message": "Текст сообщения для отправки",
+            "date": "Дата или день недели",
+            "subject": "Предмет",
+            "teacher": "Учитель"
           }},
-          "scheduleUpdate": {{
-             "day": "string (Понедельник, Вторник, Среда, Четверг, Пятница)",
-             "time_slot": "string (08:00-08:45, 09:00-09:45, 10:00-10:45, 11:00-11:45...)",
-             "className": "string (например '8Б')",
-             "newTeacher": "string (из списка выше)",
-             "newSubject": "string"
-          }},
-          "teacherAbsence": {{
-             "absentTeacher": "string (ФИО)",
-             "replacementTeacher": "string (ФИО, опционально)",
-             "day": "string (Напр. Вторник)"
-          }},
-          "originalText": "{command}",
-          "actions": ["список действий"]
+          "proposedAction": {{
+            "type": "send_whatsapp" | "update_schedule" | "create_event" | "none",
+            "description": "Человекочитаемое описание действия",
+            "params": {{}}
+          }}
         }}
+
+        Пример: "Напиши Адилю, что завтра совещание в 10"
+        Ответ: {{"intent": "send_message", "summary": "Отправка сообщения Адилю о совещании", "entities": {{"target": "Adil", "message": "Завтра совещание в 10"}}, "proposedAction": {{"type": "send_whatsapp", "params": {{"contact": "Adil", "message": "Завтра совещание в 10"}}}}}}
+
+        Команда директора: "{command}"
         """
 
         headers = {"Authorization": f"Bearer {API_KEY}"}
         payload = {
             "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0
+            "temperature": 0,
+            "response_format": {"type": "json_object"}
         }
         
-        response = requests.post(GROQ_URL, headers=headers, json=payload)
+        resp = requests.post(GROQ_URL, headers=headers, json=payload)
+        data = resp.json()['choices'][0]['message']['content']
+        result = json.loads(data)
         
-        if response.status_code != 200:
-            raise Exception(f"Groq API Error {response.status_code}: {response.text}")
-            
-        ai_text = response.json()['choices'][0]['message']['content']
-        
-        # Очистка и возврат
-        json_str = ai_text.replace('```json', '').replace('```', '').strip()
-        data = json.loads(json_str)
-        
-        # Обработка отправки сообщения
-        if data.get("intent") == "send_message":
-            target_group = data.get("entities", {}).get("targetGroup")
-            message_text = data.get("entities", {}).get("messageText")
-            if target_group and message_text:
-                try:
-                    resp = requests.post(f"{WA_SERVICE_URL}/send-group", json={"groupName": target_group, "text": message_text}, timeout=10)
-                    resp_data = resp.json()
-                    if resp.status_code == 200:
-                        data["actions"].append(f"Успешно отправлено в {target_group}")
-                    else:
-                        data["actions"].append(f"Ошибка отправки: {resp_data.get('error')}")
-                except Exception as we:
-                    data["actions"].append(f"Ошибка связи с WA сервисом: {we}")
+        # Hardcoding logic for specific names
+        low_cmd = command.lower()
+        if "адиль" in low_cmd or "адилю" in low_cmd or "куратор" in low_cmd:
+            result["entities"]["target"] = "Adil"
+            if result["proposedAction"]["type"] == "send_whatsapp":
+                result["proposedAction"]["params"]["contact"] = "Adil"
 
-        return data
+        elif "султан" in low_cmd or "султану" in low_cmd or "хоз" in low_cmd:
+            result["entities"]["target"] = "Султан"
+            if result["proposedAction"]["type"] == "send_whatsapp":
+                result["proposedAction"]["params"]["contact"] = "Султан"
+
+        return result
         
     except Exception as e:
-        print(f"Error processing command in Groq: {e}")
-        return {
-            "intent": "unknown", 
-            "route": "/", 
-            "sectionName": "Главная", 
-            "confidence": 0, 
-            "summary": "Ошибка обработки через Groq",
-            "detailedUnderstanding": str(e),
-            "entities": {},
-            "originalText": command,
-            "actions": []
-        }
+        print(f"Command processing error: {e}")
+        return {"intent": "unknown", "summary": f"Ошибка: {str(e)}", "proposedAction": {"type": "none"}}
+
+@app.post("/api/ai/execute")
+async def execute_ai_action(action: dict):
+    """Executes the action proposed by the AI"""
+    try:
+        atype = action.get("type")
+        params = action.get("params", {})
+        
+        if atype == "send_whatsapp":
+            contact = params.get("contact", "Adil")
+            message = params.get("message", "")
+            
+            import httpx
+            async with httpx.AsyncClient() as client:
+                data = {"contactName": contact, "text": message}
+                resp = await client.post(f"{WA_SERVICE_URL}/send-contact", json=data, timeout=10.0)
+                if resp.status_code != 200:
+                    # Fallback to group if needed or return error
+                    return {"success": False, "error": f"WA Gateway error: {resp.text}"}
+            return {"success": True, "message": f"Сообщение отправлено {contact}"}
+            
+        elif atype == "update_schedule":
+            # Implementation for schedule updates could go here
+            return {"success": True, "message": "Расписание обновлено (симуляция)"}
+            
+        return {"success": False, "error": "Unknown action type"}
+        
+    except Exception as e:
+        print(f"Execution error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/schedule")
+async def get_full_schedule():
+    """Returns the entire schedule from DB in the Record<Class, Record<Day, Record<Time, Cell>>> format"""
+    try:
+        rows = query_db("SELECT * FROM schedule_cells")
+        result = {}
+        for r in rows:
+            cls = r["class_name"]
+            day = r["day"]
+            time = r["time_slot"]
+            if cls not in result: result[cls] = {}
+            if day not in result[cls]: result[cls][day] = {}
+            result[cls][day][time] = {
+                "subject": r["subject"],
+                "teacher": r["teacher"],
+                "room": r["room"],
+                "isLent": bool(r["is_lent"]),
+                "lentType": r["lent_type"],
+                "lentGroup": r["lent_group"]
+            }
+        return result
+    except Exception as e:
+        print(f"Error fetching schedule: {e}")
+        return {}
+
+@app.post("/api/schedule")
+async def save_full_schedule(schedule: dict):
+    """Saves the entire schedule to DB, overwriting previous one"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM schedule_cells")
+        
+        for cls_name, days in schedule.items():
+            for day, slots in days.items():
+                for time, cell in slots.items():
+                    if not cell: continue
+                    cur.execute('''
+                        INSERT INTO schedule_cells (class_name, day, time_slot, subject, teacher, room, is_lent, lent_type, lent_group)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        cls_name, day, time, 
+                        cell.get("subject"), cell.get("teacher"), cell.get("room"),
+                        cell.get("isLent", False), cell.get("lentType"), cell.get("lentGroup")
+                    ))
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "Schedule saved to database"}
+    except Exception as e:
+        print(f"Error saving schedule: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/teachers")
+async def get_teachers():
+    try:
+        rows = query_db("SELECT name FROM teachers ORDER BY name")
+        return [r["name"] for r in rows]
+    except:
+        return []
+
+@app.get("/api/rooms")
+async def get_rooms():
+    try:
+        rows = query_db("SELECT name FROM rooms ORDER BY name")
+        return [r["name"] for r in rows]
+    except:
+        return []
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

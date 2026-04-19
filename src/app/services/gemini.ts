@@ -6,12 +6,12 @@ import { type ParsedCommand } from "../utils/aiCommandParser";
  */
 export async function processAiCommand(input: string): Promise<ParsedCommand> {
   try {
-    const response = await fetch("http://localhost:8000/process-command", {
+    const response = await fetch("http://localhost:8000/api/ai/command", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ command: input }),
+      body: JSON.stringify({ text: input }),
     });
 
     if (!response.ok) {
@@ -21,7 +21,8 @@ export async function processAiCommand(input: string): Promise<ParsedCommand> {
     const data = await response.json();
     
     // Добавляем отметку о движке для UI
-    return { ...data, engine: "AQBOBEK AI (Groq LPU)" } as ParsedCommand;
+    return { ...data, engine: "AQBOBEK AI (Llama 3.3)" } as ParsedCommand;
+
   } catch (error) {
     console.error("Groq Service Error:", error);
     
@@ -37,5 +38,30 @@ export async function processAiCommand(input: string): Promise<ParsedCommand> {
       originalText: input,
       actions: [],
     } as ParsedCommand;
+  }
+}
+export async function generateAiSchedule(matrix: any, lents: any): Promise<any> {
+  try {
+    const response = await fetch("http://localhost:8000/api/generate-fast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ matrix, lents }),
+    });
+
+    if (!response.ok) throw new Error("Backend error");
+    const data = await response.json();
+    return data; 
+
+    
+    // Если бэкенд возвращает результат в summary или другом поле, пытаемся распарсить JSON
+    if (typeof data.summary === 'string' && data.summary.includes('{')) {
+      const jsonStr = data.summary.match(/\{[\s\S]*\}/)?.[0];
+      if (jsonStr) return JSON.parse(jsonStr);
+    }
+    
+    return data; // В надежде что бэкенд отдал готовый объект
+  } catch (error) {
+    console.error("AI Generation Error:", error);
+    throw error;
   }
 }

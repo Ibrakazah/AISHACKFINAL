@@ -94,17 +94,22 @@ export function HeatmapPanel({ generatedSchedule }: Props) {
     <div className="space-y-5">
       {/* Summary row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          { icon: Users2, label: "Всего учителей",  value: teacherLoads.length, color: "blue" },
-          { icon: Flame,  label: "Перегружено (>6)", value: overloaded.length,   color: "red"  },
-          { icon: CheckCircle2, label: "Оптимальная нагрузка", value: optimal.length, color: "emerald" },
-          { icon: BarChart3, label: "Макс. уроков (нед.)", value: maxLoad, color: "amber" },
-        ].map(({ icon: Icon, label, value, color }) => (
-          <div key={label} className={`bg-${color}-50 dark:bg-${color}-950/30 rounded-2xl p-4 border border-${color}-100 dark:border-${color}-900/40`}>
-            <p className={`text-2xl font-black text-${color}-600 dark:text-${color}-400`}>{value}</p>
-            <p className="text-xs font-bold text-gray-500 dark:text-slate-400 mt-1">{label}</p>
-          </div>
-        ))}
+        <div className="bg-blue-50 dark:bg-blue-950/30 rounded-2xl p-4 border border-blue-100 dark:border-blue-900/40">
+          <p className="text-2xl font-black text-blue-600 dark:text-blue-400">{teacherLoads.length}</p>
+          <p className="text-xs font-bold text-gray-500 dark:text-slate-400 mt-1">Всего учителей</p>
+        </div>
+        <div className="bg-red-50 dark:bg-red-950/30 rounded-2xl p-4 border border-red-100 dark:border-red-900/40">
+          <p className="text-2xl font-black text-red-600 dark:text-red-400">{overloaded.length}</p>
+          <p className="text-xs font-bold text-gray-500 dark:text-slate-400 mt-1">Перегружено (&gt;6)</p>
+        </div>
+        <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded-2xl p-4 border border-emerald-100 dark:border-emerald-900/40">
+          <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">{optimal.length}</p>
+          <p className="text-xs font-bold text-gray-500 dark:text-slate-400 mt-1">Оптимальная нагрузка</p>
+        </div>
+        <div className="bg-amber-50 dark:bg-amber-950/30 rounded-2xl p-4 border border-amber-100 dark:border-amber-900/40">
+          <p className="text-2xl font-black text-amber-600 dark:text-amber-400">{maxLoad}</p>
+          <p className="text-xs font-bold text-gray-500 dark:text-slate-400 mt-1">Макс. уроков (нед.)</p>
+        </div>
       </div>
 
       {/* Legend */}

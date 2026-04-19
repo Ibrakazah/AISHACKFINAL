@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { MessageSquare, TrendingUp, Users, Clock, Trash2 } from "lucide-react";
+import { MessageSquare, TrendingUp, Users, Clock, Trash2, QrCode as QrIcon, Loader2, Smartphone, RefreshCw } from "lucide-react";
 import { toast } from "sonner"; // Assuming sonner is installed for toast notifications
 
 interface ChatMessage {
@@ -16,6 +16,9 @@ export function ChatSummary() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [filter, setFilter] = useState<"all" | "important">("all");
+  const [waStatus, setWaStatus] = useState<string>("checking");
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [loadingQr, setLoadingQr] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -26,33 +29,42 @@ export function ChatSummary() {
       const resTasks = await fetch("http://localhost:8000/api/ai-tasks");
       const textData = await resTasks.json();
       setTasks(textData);
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchWaStatus = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/wa/status");
+      const data = await res.json();
+      setWaStatus(data.status);
+    } catch {}
+  };
+
+  const fetchQr = async () => {
+    if (loadingQr) return;
+    setLoadingQr(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/wa/qr");
+      const data = await res.json();
+      if (data.qr) setQrCode(data.qr);
+    } catch { toast.error("Ошибка загрузки QR"); }
+    finally { setLoadingQr(false); }
   };
 
   useEffect(() => {
     fetchData();
-    // Fetch initial history (now done in fetchData)
+    fetchWaStatus();
+
+    const interval = setInterval(() => {
+      if (waStatus !== "connected") fetchWaStatus();
+    }, 5000);
     
-    // Listen for global new-message events from Layout
     const msgHandler = (e: Event) => {
       const customEvent = e as CustomEvent;
       if (e.type === "new-message") {
-        const newMsg = customEvent.detail;
-        setMessages(prev => [newMsg, ...prev]);
-        
-        // Notify if important
-        if (newMsg.is_important) {
-          toast.error(`Важное сообщение (Источник: ${newMsg.platform})`, {
-            description: newMsg.message,
-            duration: 5000,
-          });
-        } else {
-          toast.info(`Новое сообщение (Источник: ${newMsg.platform})`, {
-            description: newMsg.message.slice(0, 50) + "...",
-            duration: 3000,
-          });
+        setMessages(prev => [customEvent.detail, ...prev]);
+        if (customEvent.detail.is_important) {
+          toast.error(`Важное сообщение`, { description: customEvent.detail.message });
         }
       } else if (e.type === "ai-notification") {
         fetchData();
@@ -62,10 +74,17 @@ export function ChatSummary() {
     window.addEventListener("new-message", msgHandler);
     window.addEventListener("ai-notification", msgHandler);
     return () => {
+      clearInterval(interval);
       window.removeEventListener("new-message", msgHandler);
       window.removeEventListener("ai-notification", msgHandler);
     };
-  }, []);
+  }, [waStatus]);
+
+  useEffect(() => {
+    if (waStatus === "qr_ready" || waStatus === "disconnected") {
+      fetchQr();
+    }
+  }, [waStatus]);
 
   const stats = {
     total: messages.length,
@@ -176,6 +195,59 @@ export function ChatSummary() {
         </button>
       </div>
 
+      {/* WhatsApp Connection Card if disconnected */}
+      {waStatus !== "connected" && waStatus !== "checking" && (
+        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-[2rem] p-8 text-white shadow-2xl shadow-blue-500/20 relative overflow-hidden group">
+          <div className="absolute top-0 right-0 p-8 opacity-10 group-hover:scale-110 transition-transform duration-700">
+             <QrIcon className="w-64 h-64" />
+          </div>
+          
+          <div className="flex flex-col lg:flex-row items-center gap-10 relative z-10">
+            <div className="flex-1 space-y-4">
+              <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-[10px] font-black uppercase tracking-widest">
+                <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                Требуется подключение
+              </div>
+              <h2 className="text-3xl font-black leading-tight uppercase tracking-tighter">Подключите WhatsApp <br/> для работы ИИ</h2>
+              <p className="text-blue-100 font-medium max-w-md">
+                Отсканируйте QR-код своим смартфоном, чтобы бот мог анализировать сообщения и предлагать замены учителей.
+              </p>
+              <div className="flex items-center gap-6 pt-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center font-black text-lg">1</div>
+                  <span className="text-xs font-bold uppercase tracking-widest text-blue-200">Откройте WA</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center font-black text-lg">2</div>
+                  <span className="text-xs font-bold uppercase tracking-widest text-blue-200">Сканируйте</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-[2rem] shadow-2xl flex flex-col items-center gap-4 min-w-[280px]">
+              {loadingQr ? (
+                <div className="w-48 h-48 flex items-center justify-center">
+                   <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+                </div>
+              ) : qrCode ? (
+                <>
+                  <img src={qrCode} alt="WA QR" className="w-48 h-48 rounded-2xl" />
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                    <RefreshCw className="w-3 h-3" /> Обновлено только что
+                  </p>
+                </>
+              ) : (
+                <div className="w-48 h-48 flex flex-col items-center justify-center text-center gap-3 text-gray-400">
+                  <Smartphone className="w-10 h-10 opacity-20" />
+                  <p className="text-[10px] font-bold px-4">Ожидание кода от сервера...</p>
+                  <button onClick={fetchQr} className="text-xs text-blue-600 font-black uppercase">Повторить</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Список сообщений */}
       <div className="space-y-4">
         {messages.filter(m => filter === "all" || m.is_important).length === 0 ? (
@@ -235,7 +307,7 @@ export function ChatSummary() {
                       }}
                       className="whitespace-nowrap px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-sm transition-transform active:scale-95"
                    >
-                     Отправить Султану
+                     Отправить: {task.assignee || 'Султану'}
                    </button>
                 </div>
               ))}

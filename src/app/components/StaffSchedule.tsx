@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router";
-import { Calendar, User, Clock, CheckCircle2, AlertTriangle, Shield, Wrench } from "lucide-react";
-import { REAL_SCHEDULE_DATA } from "../data/realScheduleData";
+import { Calendar, User, Clock, CheckCircle2, AlertTriangle, Shield, Wrench, Loader2 } from "lucide-react";
+import { fetchActiveSchedule } from "../services/scheduleService";
 
 const DAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"];
 const TIME_SLOTS = [
@@ -12,9 +12,22 @@ const TIME_SLOTS = [
 export function StaffSchedule() {
   const { name } = useParams<{ name: string }>();
   const decodedName = name ? decodeURIComponent(name) : "Сотрудник";
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [scheduleData, setScheduleData] = useState<any>({});
+  const [isLoading, setIsLoading] = useState(true);
 
   // 1. Извлекаем уроки для данного сотрудника из базы
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const data = await fetchActiveSchedule();
+        setScheduleData(data);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    load();
+  }, []);
+
   const mySchedule: Record<string, Record<string, any>> = {};
   
   DAYS.forEach(day => {
@@ -24,21 +37,23 @@ export function StaffSchedule() {
     });
   });
 
-  Object.entries(REAL_SCHEDULE_DATA).forEach(([classKey, days]) => {
-    Object.entries(days).forEach(([day, slots]) => {
-      Object.entries(slots).forEach(([time, cell]) => {
-        if (cell.teacher && cell.teacher.includes(decodedName)) {
-           // Если в один слот попадает несколько уроков (например, лента), сохраняем первый или комбинируем
-           mySchedule[day][time] = {
-             subject: cell.subject,
-             room: cell.room,
-             class: classKey,
-             isSubstitute: cell.isSubstitute
-           };
-        }
+  if (scheduleData) {
+    Object.entries(scheduleData).forEach(([classKey, days]: [string, any]) => {
+      Object.entries(days).forEach(([day, slots]: [string, any]) => {
+        Object.entries(slots).forEach(([time, cell]: [string, any]) => {
+          if (cell.teacher && cell.teacher.includes(decodedName)) {
+            mySchedule[day][time] = {
+              subject: cell.subject,
+              room: cell.room,
+              class: classKey,
+              isSubstitute: cell.isSubstitute
+            };
+          }
+        });
       });
     });
-  });
+  }
+
 
   // 2. Fetch ИИ-задач для персонала (Симуляция интеграции)
   useEffect(() => {

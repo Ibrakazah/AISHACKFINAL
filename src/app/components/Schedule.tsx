@@ -6,6 +6,7 @@ import {
 import { REAL_SCHEDULE_DATA } from "../data/realScheduleData";
 import { type ScheduleCell } from "../utils/scheduleTypes";
 import { VoiceInput } from "./VoiceInput";
+import { fetchActiveSchedule } from "../services/scheduleService";
 
 const DAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"];
 const TIME_SLOTS = [
@@ -77,6 +78,24 @@ export function Schedule() {
   const [selectedDay, setSelectedDay] = useState(DAYS[0]);
   const [aiProcessing, setAiProcessing] = useState(false);
   const [aiResult, setAiResult] = useState<{ changes: number; conflicts: number } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const data = await fetchActiveSchedule();
+        if (Object.keys(data).length > 0) {
+          setScheduleData(data as any);
+        }
+      } catch (e) {
+        console.error("Failed to load schedule from DB", e);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    load();
+  }, []);
+
 
   // ═══ Cell edit state ═══
   const [editingCell, setEditingCell] = useState<{ classKey: string; day: string; time: string } | null>(null);

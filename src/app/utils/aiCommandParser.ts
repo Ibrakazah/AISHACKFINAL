@@ -7,6 +7,11 @@
 // ============================================================
 
 export interface CommandEntity {
+  target?: string;
+  message?: string;
+  date?: string;
+  subject?: string;
+  teacher?: string;
   teacherName?: string;
   reportNumber?: string;
   className?: string;
@@ -14,35 +19,23 @@ export interface CommandEntity {
 }
 
 export interface ParsedCommand {
-  intent: "schedule" | "reports" | "chat" | "suggestions" | "calendar" | "tasks" | "unknown";
+  intent: "schedule" | "reports" | "chat" | "suggestions" | "calendar" | "tasks" | "send_message" | "schedule_change" | "report_request" | "calendar_event" | "navigation" | "unknown";
   route: string;
-  sectionName: string;
-  confidence: number;
+  sectionName?: string;
+  confidence?: number;
   summary: string;
-  detailedUnderstanding: string;
+  detailedUnderstanding?: string;
   entities: CommandEntity;
-  scheduleUpdate?: {
-    day: string;
-    time_slot: string;
-    className: string;
-    newTeacher: string;
-    newSubject: string;
+  proposedAction?: {
+    type: "send_whatsapp" | "update_schedule" | "create_event" | "none";
+    description: string;
+    params: any;
   };
-  teacherAbsence?: {
-    absentTeacher: string;
-    replacementTeacher?: string;
-    day: string;
-  };
-  scheduleMassDelete?: string;
-  originalText: string;
-  actions: string[];
-  generatedTasks?: {
-    id: string;
-    assignTo: string;
-    text: string;
-    status: "pending" | "sent";
-  }[];
+  originalText?: string;
+  actions?: string[];
+  engine?: string;
 }
+
 
 interface IntentRule {
   intent: ParsedCommand["intent"];

@@ -21,9 +21,11 @@ import {
   BookOpen,
   Wifi,
   WifiOff,
-  Wand2
+  Wand2,
+  MessageCircle
 } from "lucide-react";
 import { WhatsAppConnector } from "./WhatsAppConnector";
+import { ChatBot } from "./ChatBot";
 import { toast } from "sonner";
 
 interface AINotification {
@@ -50,58 +52,81 @@ export function Layout() {
   useEffect(() => {
     setMounted(true);
     
-    // Первичная загрузка статуса
+    // Первичная загрузка статуса (тихо игнорируем если бэкенд недоступен)
     fetch("http://localhost:8000/api/wa/status")
       .then(res => res.json())
       .then(data => {
         setWaStatus(data.status);
         setWaPaused(data.paused);
       })
-      .catch(err => console.error("Failed to fetch WA status", err));
+      .catch(() => { /* backend not running, ignore silently */ });
   }, []);
 
-  // WebSocket соединение (глобальное)
+  // WebSocket соединение (глобальное) с защитой от спама при отсутствии бэкенда
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/ws");
-    
-    ws.onopen = () => {
-      console.log("Global WebSocket Connected");
-      setIsWsConnected(true);
-    };
-    
-    ws.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      console.log("WS Event:", payload);
-      
-      if (payload.type === "WA_STATUS") {
-        setWaStatus(payload.status);
-      } else if (payload.type === "WA_PAUSED") {
-        setWaPaused(payload.paused);
-      } else if (payload.type === "NEW_MESSAGE") {
-        // Пробрасываем событие для ChatSummary
-        window.dispatchEvent(new CustomEvent("new-message", { detail: payload.data }));
-      } else if (payload.type === "NEW_AI_TASK") {
-        // Обработка новой ИИ задачи
-        window.dispatchEvent(new CustomEvent("ai-notification", { 
-          detail: { 
-            title: "Новая ИИ задача", 
-            message: payload.data.proposed_action, 
-            type: "success" 
-          } 
-        }));
-      }
-    };
-    
-    ws.onclose = () => {
-      console.log("Global WebSocket Disconnected");
-      setIsWsConnected(false);
-      // Попытка реконнекта через 5 сек
-      setTimeout(() => {
-        // This is a simple way; in production use a ref and a loop
-      }, 5000);
-    };
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
+    let isClosed = false;
 
-    return () => ws.close();
+    function connect() {
+      if (isClosed) return;
+      try {
+        ws = new WebSocket("ws://localhost:8000/ws");
+      } catch {
+        // WebSocket constructor failed (e.g. invalid URL) — don't spam
+        return;
+      }
+      
+      ws.onopen = () => {
+        reconnectAttempt = 0;
+        setIsWsConnected(true);
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          
+          if (payload.type === "WA_STATUS") {
+            setWaStatus(payload.status);
+          } else if (payload.type === "WA_PAUSED") {
+            setWaPaused(payload.paused);
+          } else if (payload.type === "NEW_MESSAGE") {
+            window.dispatchEvent(new CustomEvent("new-message", { detail: payload.data }));
+          } else if (payload.type === "NEW_AI_TASK") {
+            window.dispatchEvent(new CustomEvent("ai-notification", { 
+              detail: { 
+                title: "Новая ИИ задача", 
+                message: payload.data.proposed_action, 
+                type: "success" 
+              } 
+            }));
+          }
+        } catch { /* ignore malformed messages */ }
+      };
+      
+      ws.onclose = () => {
+        setIsWsConnected(false);
+        if (!isClosed) {
+          // Exponential backoff: 2s, 4s, 8s, 16s, max 30s
+          const delay = Math.min(2000 * Math.pow(2, reconnectAttempt), 30000);
+          reconnectAttempt++;
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+
+      ws.onerror = () => {
+        // Silently handle — onclose will fire after this
+      };
+    }
+
+    connect();
+
+    return () => {
+      isClosed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) ws.close();
+    };
   }, []);
 
   const handleWaLogout = async () => {
@@ -171,8 +196,10 @@ export function Layout() {
     { path: "/", label: "Расписание", icon: Calendar },
     { path: "/schedule-generator", label: "AI Генератор", icon: Wand2 },
     { path: "/chat-summary", label: "Сводка чата", icon: MessageSquare },
+    { path: "/chat-bot", label: "Чат-бот", icon: MessageCircle },
     { path: "/reports", label: "Отчеты", icon: FileText },
     { path: "/calendar", label: "Календарь директора", icon: CalendarDays },
+    { path: "/teacher-view", label: "Расписание учителей", icon: Users },
     { path: "/ai-chat", label: "AI Задачи & Чат", icon: Brain },
   ];
 
