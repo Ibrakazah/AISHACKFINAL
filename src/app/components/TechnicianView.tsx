@@ -26,11 +26,15 @@ export function TechnicianView() {
           const allIncidents: Incident[] = data.incidents || [];
           
           // Filter only technical/maintenance related incidents
-          const technicalRoles = ["Завхоз", "Слесарь", "Электрик", "Сантехник", "Техник", "IT", "Мастер"];
+          const technicalNames = ["Бекмуратов", "Жумабаев", "Касымова", "Тулеубаев", "Оспанова", "Сатыбалдиев", "Конырбаев"];
+          const technicalRoles = ["Завхоз", "Слесарь", "Электрик", "Сантехник", "Техник", "IT", "Мастер", "Убор"];
+          
           const filtered = allIncidents.filter(inc => 
             technicalRoles.some(role => inc.assignedTo.includes(role)) || 
+            technicalNames.some(name => inc.assignedTo.includes(name)) ||
             inc.assignedTo.toLowerCase().includes("ремонт")
           );
+
           
           setIncidents(filtered);
         }
@@ -109,8 +113,13 @@ export function TechnicianView() {
                   </div>
                   <div className="flex items-center gap-2 text-xs font-medium text-gray-400 dark:text-slate-500">
                     <User className="w-4 h-4" />
+                    Ответственный: <span className="text-indigo-500 font-bold">{inc.assignedTo}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-medium text-gray-400 dark:text-slate-500">
+                    <ShieldCheck className="w-4 h-4" />
                     Сообщил: {inc.reporter}
                   </div>
+
                 </div>
               </div>
             ))}

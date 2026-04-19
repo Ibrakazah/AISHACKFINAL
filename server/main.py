@@ -349,6 +349,17 @@ async def internal_webhook(request: Request):
     
     # Format the context so the bot knows who is talking about what (e.g. mentions of Adlet 9a)
     history_text = "\n".join([f"[{row[0]}]: {row[1]}" for row in reversed(global_recent)]) if global_recent else "Нет контекста."
+
+    tech_staff_list = """
+    Технический персонал (назначай только их на ремонт):
+    - Бекмуратов Серик (Слесарь-сантехник)
+    - Жумабаев Ерлан (Электрик)
+    - Касымова Гульнар (Старшая уборщица)
+    - Тулеубаев Нурлан (IT-специалист)
+    - Оспанова Айгуль (Уборщица 1 этаж)
+    - Сатыбалдиев Мурат (Уборщик 2-3 этаж)
+    - Конырбаев Асет (Дворник / Разнорабочий)
+    """
         
     # Analyze message with Groq AI for Summary & Importance
     prompt = f"""
@@ -357,8 +368,12 @@ async def internal_webhook(request: Request):
     Общий контекст чата (последние 15 сообщений): '{history_text}'
     Текущее сообщение: '{text_body}'
     
+    СПИСОК ТЕХПЕРСОНАЛА ДЛЯ НАЗНАЧЕНИЯ:
+    {tech_staff_list}
+    
     Задачи: 
     1. Установи роль отправителя ('Учитель', 'Завуч', 'Завхоз' или 'Сотрудник').
+
     2. Оцени важность (is_important: true/false). 
        ВАЖНОЕ (TRUE): Болезни детей ('плохо', 'температура'), поломки ('окно', 'дверь', 'свет'), отчеты по питанию/отсутствующим, жалобы.
        НЕВАЖНОЕ (FALSE): Приветствия, "ок", "хорошо", "понял".
@@ -387,10 +402,11 @@ async def internal_webhook(request: Request):
          "competition_count": 0
       }},
       "incident": {{
-         "is_incident": boolean, // TRUE ТОЛЬКО ДЛЯ ФИЗИЧЕСКОГО РЕМОНТА (окна, мебель, сантехника, свет). Для буллинга, драк, болезней ставь false.
+         "is_incident": boolean, // TRUE ТОЛЬКО ДЛЯ ФИЗИЧЕСКОГО РЕМОНТА (окна, мебель, сантехника, свет).
          "location": "комната или кабинет",
-         "assigned_to": "кому поручить (Завхоз, Слесарь, Электрик, Сантехник)"
+         "assigned_to": "ФИО сотрудника из списка ТЕХПЕРСОНАЛА (например: Жумабаев Ерлан)"
       }}
+
 
     }}
     """
