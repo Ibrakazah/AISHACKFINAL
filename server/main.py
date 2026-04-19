@@ -143,6 +143,21 @@ async def startup_event():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS calendar_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            type TEXT DEFAULT 'other',
+            date TEXT NOT NULL,
+            time TEXT DEFAULT '09:00',
+            duration TEXT DEFAULT '1 ч.',
+            location TEXT DEFAULT '',
+            participants TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            source TEXT DEFAULT 'manual',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -1060,6 +1075,44 @@ async def generate_fast(request: Request):
         "lessons_placed": total_lessons,
         "schedule": schedule
     }
+
+
+# === CALENDAR API ===
+
+@app.get("/api/calendar")
+async def get_calendar():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id,title,type,date,time,duration,location,participants,description,source,created_at FROM calendar_events ORDER BY date,time")
+    rows = cur.fetchall()
+    conn.close()
+    keys = ["id","title","type","date","time","duration","location","participants","description","source","created_at"]
+    return [dict(zip(keys,r)) for r in rows]
+
+@app.post("/api/calendar")
+async def create_calendar_event(request: Request):
+    data = await request.json()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO calendar_events (title,type,date,time,duration,location,participants,description,source) VALUES (?,?,?,?,?,?,?,?,?)",
+        (data.get("title","Без названия"), data.get("type","other"), data.get("date",""),
+         data.get("time","09:00"), data.get("duration","1 ч."), data.get("location",""),
+         data.get("participants",""), data.get("description",""), data.get("source","manual"))
+    )
+    eid = cur.lastrowid
+    conn.commit(); conn.close()
+    await manager.broadcast({"type":"CALENDAR_UPDATE"})
+    return {"success": True, "id": eid}
+
+@app.delete("/api/calendar/{event_id}")
+async def delete_calendar_event(event_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM calendar_events WHERE id=?", (event_id,))
+    conn.commit(); conn.close()
+    await manager.broadcast({"type":"CALENDAR_UPDATE"})
+    return {"success": True}
 
 @app.post("/api/ai/command")
 async def process_command(cmd: dict):
