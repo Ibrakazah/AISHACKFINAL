@@ -292,17 +292,20 @@ export function Schedule() {
           return "Резерв (Предметник не найден)";
         };
 
+        const normalize = (name: string) => name.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+        const targetNormalized = normalize(selectedTeacher);
+
         Object.keys(newData).forEach(classKey => {
           if (newData[classKey][selectedDay]) {
             Object.keys(newData[classKey][selectedDay]).forEach(time => {
               const cell = newData[classKey][selectedDay][time];
-              // Гибкое сравнение имен (игнорируем точки и проверяем вхождение)
-              if (cell && cell.teacher && (
-                cell.teacher === selectedTeacher || 
-                cell.teacher.startsWith(selectedTeacher) || 
-                selectedTeacher.startsWith(cell.teacher)
-              )) {
-                const replacement = getFreeTeacher(cell.subject, selectedDay, time, newData, selectedTeacher);
+              if (cell && cell.teacher) {
+                const teacherNormalized = normalize(cell.teacher);
+                if (teacherNormalized === targetNormalized || 
+                    teacherNormalized.includes(targetNormalized) || 
+                    targetNormalized.includes(teacherNormalized)) {
+                  const replacement = getFreeTeacher(cell.subject, selectedDay, time, newData, selectedTeacher);
+
 
                 logs.push(`${classKey} | ${time}: ${cell.teacher} → ${replacement} (${cell.subject})`);
                 newData[classKey][selectedDay][time] = {
