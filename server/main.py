@@ -1249,7 +1249,25 @@ async def execute_ai_action(action: dict):
             # Implementation for schedule updates could go here
             return {"success": True, "message": "Расписание обновлено (симуляция)"}
             
-        return {"success": False, "error": "Unknown action type"}
+        elif atype == "create_event":
+            import datetime
+            ev_title = params.get("title", "Новое событие")
+            ev_date = params.get("date") or datetime.date.today().isoformat()
+            if not ev_date or len(ev_date) < 8:
+                ev_date = datetime.date.today().isoformat()
+                
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO calendar_events (title, type, date, time, location, description, source) VALUES (?,?,?,?,?,?,?)",
+                (ev_title, "meeting", ev_date, params.get("time", "10:00"), params.get("location", ""), "", "chatbot")
+            )
+            conn.commit()
+            conn.close()
+            await manager.broadcast({"type":"CALENDAR_UPDATE"})
+            return {"success": True, "message": f"Событие '{ev_title}' добавлено в календарь!"}
+            
+        return {"success": False, "error": f"Unknown action type: {atype}"}
         
     except Exception as e:
         print(f"Execution error: {e}")
