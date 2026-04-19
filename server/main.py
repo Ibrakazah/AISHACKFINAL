@@ -364,33 +364,28 @@ async def internal_webhook(request: Request):
     # Analyze message with Groq AI for Summary & Importance
     prompt = f"""
     Ты - умный ИИ-Директор школы. Проанализируй сообщение из чата.
-    Отправитель: '{source_name}', Контекст: '{history_text}', Сообщение: '{text_body}'
-    
-    СПИСОК ТЕХПЕРСОНАЛА:
-    {tech_staff_list}
-    
-    ИНСТРУКЦИИ:
+    Раздели смыслы:
     1. КРИТЕРИЙ ВАЖНОСТИ: Если сообщение < 3 букв, опечатка (н-р "л", "дд") или мусор -> is_important: false, proposed_action: "".
     2. РАСПРЕДЕЛЕНИЕ РАБОТ:
-       - Сантехника/Вода -> Бекмуратов Серик (Слесарь-сантехник).
-       - Мебель/Стулья/Парты/Замки -> Конырбаев Асет (Разнорабочий).
+       - Сантехника/Вода -> Бекмуратов Серик (Слесарь).
+       - Мебель/Двери/Стулья/Парты -> Конырбаев Асет (Разнорабочий).
        - Электрика -> Жумабаев Ерлан.
        - Уборка -> Касымова Гульнар.
     3. КОНТЕКСТ: Не предлагай действия из истории, если текущее сообщение не имеет смысла.
-    4. ОТЧЕТЫ: Если есть цифры отсутствующих учеников -> is_important: true, summary: "Отчет по питанию".
-
+    
     JSON:
     {{ 
       "role": "string", "is_important": boolean, "summary": "суть",
       "needs_clarification": boolean, "clarification_text": "",
-      "proposed_action": "конкретный приказ (только для реальных проблем)",
+      "proposed_action": "действие (только для реальных проблем)",
       "assignee": "ФИО или отдел", "is_continuation": boolean,
       "nutrition": {{ "is_nutrition": boolean, "sick_count": 0, "competition_count": 0 }},
       "incident": {{
          "is_incident": boolean, "location": "где",
-         "assigned_to": "ФИО из списка (напр. Конырбаев Асет)"
+         "assigned_to": "ФИО из техперсонала (напр. Конырбаев Асет)"
       }}
     }}
+    Отправитель: '{source_name}', Текст: '{text_body}', История: '{history_text}'
     """
     
     is_important = False
