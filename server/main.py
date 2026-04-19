@@ -754,13 +754,16 @@ async def generate_fast(request: Request):
     class_busy = {}
     teacher_day_load = {}
     teacher_week_load = {}
+    class_day_load = {}
     
     # New: handle explicit unavailability
     unavail_t = data.get("unavailableTeachers", {}) # { "TeacherName": ["Понедельник", ... ] }
     unavail_r = data.get("unavailableRooms", {})    # { "RoomName": ["Понедельник", ... ] }
 
     def mark_busy(c, r, tc, d, tm):
-        if c: class_busy.setdefault(c, {}).setdefault(d, {})[tm] = True
+        if c: 
+            class_busy.setdefault(c, {}).setdefault(d, {})[tm] = True
+            class_day_load.setdefault(c, {})[d] = class_day_load.get(c, {}).get(d, 0) + 1
         if r: 
             # Специальная логика для Спортзала: может вместить до 3 классов одновременно
             capacity = 3 if "спортзал" in r.lower() else 1
@@ -800,35 +803,41 @@ async def generate_fast(request: Request):
         group_data = lent.get("groupData", [])
         lent_id = lent.get("id")
         
-        # 1. Линейный поиск общего "окна" для всех участников ленты
+        # 1. Интеллектуальный поиск общего окна (балансировка нагрузки по дням)
+        def get_lent_score(d):
+            if not p_classes: return 0
+            return max(class_day_load.get(c, {}).get(d, 0) for c in p_classes)
+            
+        sorted_slots = sorted([{"day": d, "time": t} for d in days for t in time_slots], 
+                              key=lambda s: (get_lent_score(s["day"]), days.index(s["day"]), time_slots.index(s["time"])))
+                              
         found_slot = None
-        for d in days:
-            for t in time_slots:
-                can_place = True
-                if lent_type == "profile":
-                    for cls in p_classes:
-                        if not is_free(cls, None, None, d, t): 
+        for slot in sorted_slots:
+            d, t = slot["day"], slot["time"]
+            can_place = True
+            if lent_type == "profile":
+                for cls in p_classes:
+                    if not is_free(cls, None, None, d, t): 
+                        can_place = False
+                        break
+                if not can_place: continue
+                for gd in group_data:
+                    if gd.get("room") and not is_free(None, gd.get("room"), None, d, t): can_place = False; break
+                    if gd.get("teacher") and not is_free(None, None, gd.get("teacher"), d, t): can_place = False; break
+            else:
+                for gi in range(grps):
+                    teacher = lent_t[gi] if gi < len(lent_t) else ""
+                    room = lent_r[gi] if gi < len(lent_r) else ""
+                    assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
+                    for cls in assigned:
+                        if not is_free(cls, room, teacher, d, t):
                             can_place = False
                             break
-                    if not can_place: continue
-                    for gd in group_data:
-                        if gd.get("room") and not is_free(None, gd.get("room"), None, d, t): can_place = False; break
-                        if gd.get("teacher") and not is_free(None, None, gd.get("teacher"), d, t): can_place = False; break
-                else:
-                    for gi in range(grps):
-                        teacher = lent_t[gi] if gi < len(lent_t) else ""
-                        room = lent_r[gi] if gi < len(lent_r) else ""
-                        assigned = [c for i, c in enumerate(p_classes) if i % grps == gi]
-                        for cls in assigned:
-                            if not is_free(cls, room, teacher, d, t):
-                                can_place = False
-                                break
-                        if not can_place: break
-                
-                if can_place:
-                    found_slot = (d, t)
-                    break
-            if found_slot: break
+                    if not can_place: break
+            
+            if can_place:
+                found_slot = (d, t)
+                break
             
         if not found_slot:
             conflicts += 1
@@ -860,6 +869,7 @@ async def generate_fast(request: Request):
                     "lentType": "profile",
                     "lentId": lent_id
                 }
+                mark_busy(cls, None, None, fd, ft)
             for gd in group_data:
                 # В профиле кабинеты и учителя не привязаны к конкретному классу, но заняты на это время
                 for cls in p_classes: mark_busy(None, gd.get("room"), gd.get("teacher"), fd, ft)
@@ -1011,13 +1021,18 @@ async def generate_fast(request: Request):
         # allow max 2 per day only for very heavy subjects (>5 h/week)
         max_per_day = 2 if target > 5 else 1
 
-        # Sort slots: prefer days where subject is least placed for this class,
-        # then prefer earlier time slots in the day.
-        def get_sorted_slots(_cls=item["cls"], _sl=sl):
+        # Sort slots: spread lessons evenly!
+        # 1. Day where this SUBJECT is least dense for this class
+        # 2. Day where THIS CLASS has the fewest lessons overall
+        # 3. Day where THIS TEACHER has the fewest lessons (if teacher strictly provided)
+        # 4. Fill earlier time slots first to avoid holes
+        def get_sorted_slots(_cls=item["cls"], _sl=sl, _tc=item.get("teacher")):
             return sorted(all_slots, key=lambda s: (
                 cls_subj_day.get(_cls, {}).get(_sl, {}).get(s["day"], 0),
-                days.index(s["day"]),
-                time_slots.index(s["time"])
+                class_day_load.get(_cls, {}).get(s["day"], 0),
+                teacher_day_load.get(_tc, {}).get(s["day"], 0) if _tc else 0,
+                time_slots.index(s["time"]),
+                days.index(s["day"])
             ))
 
         for _ in range(target):
