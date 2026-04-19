@@ -62,6 +62,7 @@ const TEACHER_COMPETENCIES = getTeacherCompetencies(REAL_SCHEDULE_DATA);
 export function Schedule() {
   const [scheduleMode, setScheduleMode] = useState<"classic" | "lent">("classic");
   const [showConstraints, setShowConstraints] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
   const [maxTeacherLoad, setMaxTeacherLoad] = useState(6);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [scheduleData, setScheduleData] = useState(REAL_SCHEDULE_DATA);
@@ -433,6 +434,10 @@ export function Schedule() {
                ОГРАНИЧЕНИЯ
             </button>
 
+            <button onClick={() => setShowHeatmap(!showHeatmap)} className={`px-4 py-2 rounded-xl border text-xs font-black transition-all shadow-sm ${showHeatmap ? "bg-rose-500 text-white border-rose-600" : "bg-rose-50 dark:bg-rose-900/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800 hover:bg-rose-100"}`}>
+               ТЕПЛОВАЯ КАРТА
+            </button>
+
             <div className="flex items-center gap-1 bg-gray-50 dark:bg-slate-800 px-2 py-1 rounded-xl border border-gray-200 dark:border-slate-700">
               <button onClick={() => setZoomLevel(prev => Math.max(0.4, prev - 0.1))} className="p-1 text-gray-400 hover:text-blue-600"><ZoomOut className="w-4 h-4" /></button>
               <span className="text-[10px] font-black w-10 text-center dark:text-slate-400 tracking-tighter">{Math.round(zoomLevel * 100)}%</span>
@@ -698,9 +703,20 @@ export function Schedule() {
                                 const cell = scheduleData[classKey]?.[day]?.[time];
                                 const isLentBlock = scheduleMode === "lent" && cell && (cell.subject.includes("/") || cell.subject.toLowerCase().includes("ағылшын"));
 
+                                let heatmapClasses = "";
+                                if (showHeatmap && scheduleData) {
+                                  const total = ALL_CLASSES.length;
+                                  const busy = ALL_CLASSES.filter(c => scheduleData[c]?.[day]?.[time]).length;
+                                  const density = busy / total;
+                                  if (density > 0.8) heatmapClasses = "bg-rose-500/40 dark:bg-rose-900/50";
+                                  else if (density > 0.5) heatmapClasses = "bg-amber-400/40 dark:bg-amber-900/50";
+                                  else if (density > 0.2) heatmapClasses = "bg-emerald-400/40 dark:bg-emerald-900/50";
+                                  else heatmapClasses = "bg-blue-300/20 dark:bg-blue-900/30";
+                                }
+
                                 return (
                                   <td key={classKey} className={`p-4 border border-gray-100 dark:border-slate-800 text-center group cursor-pointer transition-colors relative
-                                     ${isLentBlock ? "bg-purple-50 dark:bg-purple-900/20" : "hover:bg-white dark:hover:bg-slate-800"}
+                                     ${showHeatmap ? heatmapClasses : (isLentBlock ? "bg-purple-50 dark:bg-purple-900/20" : "hover:bg-white dark:hover:bg-slate-800")}
                                   `} onClick={() => handleEdit(classKey, day, time)}>
                                     {isLentBlock && (
                                        <div className="absolute inset-0 border-2 border-purple-400 dark:border-purple-600 rounded-lg opacity-40 pointer-events-none z-0"></div>
