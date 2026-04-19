@@ -878,8 +878,17 @@ async def generate_fast(request: Request):
             overrides = subj_obj.get("overrides", {})
             if cls in overrides:
                 tot_hrs = overrides[cls]
+            elif isinstance(hpw, dict):
+                # Matrix stores hours by full class name ("7А") OR by grade ("7")
+                # Try exact class match first, then grade-only fallback
+                if cls in hpw:
+                    tot_hrs = hpw[cls]
+                else:
+                    m = re.search(r"\d+", cls)
+                    grade = m.group(0) if m else "7"
+                    tot_hrs = hpw.get(grade, 0)
             else:
-                tot_hrs = hpw.get(grade, 0) if isinstance(hpw, dict) else hpw
+                tot_hrs = hpw if isinstance(hpw, (int, float)) else 0
 
             if strict.get(cls, {}).get(subj.lower(), 0) > 0: continue
             
@@ -956,78 +965,88 @@ async def generate_fast(request: Request):
 
         # Sort slots: prefer days where subject is least placed for this class,
         # then prefer earlier time slots in the day.
-        def slot_priority(s, _cls=item["cls"], _sl=sl):
-            already = cls_subj_day.get(_cls, {}).get(_sl, {}).get(s["day"], 0)
-            return (already, days.index(s["day"]), time_slots.index(s["time"]))
+        def get_sorted_slots(_cls=item["cls"], _sl=sl):
+            return sorted(all_slots, key=lambda s: (
+                cls_subj_day.get(_cls, {}).get(_sl, {}).get(s["day"], 0),
+                days.index(s["day"]),
+                time_slots.index(s["time"])
+            ))
 
-        sorted_slots = sorted(all_slots, key=slot_priority)
-
-        for slot in sorted_slots:
+        for _ in range(target):
             if placed >= target:
                 break
-            d, t = slot["day"], slot["time"]
 
-            # Guard 1: daily subject cap for this class
-            if cls_subj_day.get(item["cls"], {}).get(sl, {}).get(d, 0) >= max_per_day:
-                continue
+            placed_this_round = False
+            # Re-sort EVERY time so updated cls_subj_day affects next day choice
+            for slot in get_sorted_slots():
+                d, t = slot["day"], slot["time"]
 
-            # Guard 2: class must be free at this slot
-            if not is_free(item["cls"], None, None, d, t):
-                continue
+                # Guard 1: daily subject cap for this class
+                if cls_subj_day.get(item["cls"], {}).get(sl, {}).get(d, 0) >= max_per_day:
+                    continue
 
-            # ── Teacher selection ─────────────────────────────────────────────
-            sel_t = None
-            if item["teacher"]:
-                for gt in gen_teachers:
-                    if gt["name"] == item["teacher"]:
-                        if (is_free(None, None, item["teacher"], d, t) and
-                                teacher_day_load.get(item["teacher"], {}).get(d, 0) < gt["limitDay"] and
-                                teacher_week_load.get(item["teacher"], 0) < gt["limitWeek"]):
-                            sel_t = item["teacher"]
+                # Guard 2: class must be free at this slot
+                if not is_free(item["cls"], None, None, d, t):
+                    continue
+
+                # Teacher selection
+                sel_t = None
+                if item["teacher"]:
+                    for gt in gen_teachers:
+                        if gt["name"] == item["teacher"]:
+                            if (is_free(None, None, item["teacher"], d, t) and
+                                    teacher_day_load.get(item["teacher"], {}).get(d, 0) < gt["limitDay"] and
+                                    teacher_week_load.get(item["teacher"], 0) < gt["limitWeek"]):
+                                sel_t = item["teacher"]
+                            break
+                else:
+                    capable = [
+                        gt for gt in gen_teachers
+                        if sl in gt["lowerSubjects"]
+                        and is_free(None, None, gt["name"], d, t)
+                        and teacher_day_load.get(gt["name"], {}).get(d, 0) < gt["limitDay"]
+                        and teacher_week_load.get(gt["name"], 0) < gt["limitWeek"]
+                    ]
+                    if capable:
+                        capable.sort(key=lambda x: (
+                            teacher_day_load.get(x["name"], {}).get(d, 0),
+                            teacher_week_load.get(x["name"], 0)
+                        ))
+                        sel_t = capable[0]["name"]
+
+                if not sel_t:
+                    continue
+
+                # Room selection
+                sel_r = None
+                for ptype in pref_types:
+                    free_rr = [r["name"] for r in rooms
+                               if r.get("type") == ptype and is_free(None, r["name"], None, d, t)]
+                    if free_rr:
+                        sel_r = free_rr[0]
                         break
-            else:
-                capable = [
-                    gt for gt in gen_teachers
-                    if sl in gt["lowerSubjects"]
-                    and is_free(None, None, gt["name"], d, t)
-                    and teacher_day_load.get(gt["name"], {}).get(d, 0) < gt["limitDay"]
-                    and teacher_week_load.get(gt["name"], 0) < gt["limitWeek"]
-                ]
-                if capable:
-                    capable.sort(key=lambda x: (
-                        teacher_day_load.get(x["name"], {}).get(d, 0),
-                        teacher_week_load.get(x["name"], 0)
-                    ))
-                    sel_t = capable[0]["name"]
 
-            if not sel_t:
-                continue
+                if not sel_r:
+                    continue
 
-            # ── Room selection ────────────────────────────────────────────────
-            sel_r = None
-            for ptype in pref_types:
-                free_rr = [r["name"] for r in rooms
-                           if r.get("type") == ptype and is_free(None, r["name"], None, d, t)]
-                if free_rr:
-                    sel_r = free_rr[0]
-                    break
+                # Place lesson
+                schedule[item["cls"]][d][t] = {
+                    "subject": item["subject"],
+                    "teacher": sel_t,
+                    "room":    sel_r,
+                }
+                mark_busy(item["cls"], sel_r, sel_t, d, t)
 
-            if not sel_r:
-                continue
+                cls_subj_day.setdefault(item["cls"], {}).setdefault(sl, {})
+                cls_subj_day[item["cls"]][sl][d] = cls_subj_day[item["cls"]][sl].get(d, 0) + 1
 
-            # ── Place lesson ──────────────────────────────────────────────────
-            schedule[item["cls"]][d][t] = {
-                "subject": item["subject"],
-                "teacher": sel_t,
-                "room":    sel_r,
-            }
-            mark_busy(item["cls"], sel_r, sel_t, d, t)
+                total_lessons += 1
+                placed += 1
+                placed_this_round = True
+                break  # placed one — move to next round
 
-            cls_subj_day.setdefault(item["cls"], {}).setdefault(sl, {})
-            cls_subj_day[item["cls"]][sl][d] = cls_subj_day[item["cls"]][sl].get(d, 0) + 1
-
-            total_lessons += 1
-            placed += 1
+            if not placed_this_round:
+                break  # no valid slot found for this subject
 
         if placed < target:
             conflict_reasons.append(
