@@ -96,19 +96,19 @@ export function TaskDistribution() {
         result.scheduleUpdate || result.teacherAbsence || result.scheduleMassDelete
       );
 
-      if (isDestructiveAction && result.confidence < MIN_CONFIDENCE_FOR_DESTRUCTIVE_ACTION) {
+      if (isDestructiveAction && (result.confidence || 0) < MIN_CONFIDENCE_FOR_DESTRUCTIVE_ACTION) {
         // Блокируем автоматическое выполнение, запрашиваем подтверждение
-        console.warn(`⚠️ ЗАЩИТА: Уверенность ${result.confidence}% ниже порога ${MIN_CONFIDENCE_FOR_DESTRUCTIVE_ACTION}%. Действие заблокировано.`);
+        console.warn(`⚠️ ЗАЩИТА: Уверенность ${result.confidence || 0}% ниже порога ${MIN_CONFIDENCE_FOR_DESTRUCTIVE_ACTION}%. Действие заблокировано.`);
         setPendingConfirmation(result);
         window.dispatchEvent(
           new CustomEvent("ai-notification", {
             detail: {
               type: "warning",
               title: "⚠️ Действие заблокировано",
-              message: `Уверенность ИИ (${result.confidence}%) слишком низка для автоматического изменения расписания. Требуется подтверждение директора.`,
+              message: `Уверенность ИИ (${result.confidence || 0}%) слишком низка для автоматического изменения расписания. Требуется подтверждение директора.`,
               route: "/",
               sectionName: "Защита",
-              confidence: result.confidence,
+              confidence: result.confidence || 0,
             },
           })
         );
@@ -300,7 +300,7 @@ export function TaskDistribution() {
               {commandHistory.length > 0
                 ? Math.round(
                   commandHistory.reduce(
-                    (acc, c) => acc + c.result.confidence,
+                    (acc, c) => acc + (c.result.confidence || 0),
                     0
                   ) / commandHistory.length
                 )
@@ -446,11 +446,11 @@ export function TaskDistribution() {
                       ? "Требуется уточнение"
                       : "Команда распознана успешно"}
                   </h3>
-                  <div className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${parsedResult.confidence >= 70
+                  <div className={`px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest ${(parsedResult.confidence || 0) >= 70
                         ? "bg-emerald-600 text-white"
                         : "bg-yellow-500 text-white"
                       }`}>
-                    Точность: {parsedResult.confidence}%
+                    Точность: {parsedResult.confidence || 0}%
                   </div>
                   <div className="px-4 py-1.5 bg-blue-600 text-white rounded-xl text-[10px] uppercase font-black tracking-widest">
                     {(parsedResult as any).engine || "AQBOBEK AI"}
@@ -556,8 +556,8 @@ export function TaskDistribution() {
                       <span className="w-1 h-1 bg-gray-300 dark:bg-slate-700 rounded-full"></span>
                       <span>{item.time}</span>
                       <span className="w-1 h-1 bg-gray-300 dark:bg-slate-700 rounded-full"></span>
-                      <span className={item.result.confidence >= 70 ? "text-emerald-500" : "text-yellow-500"}>
-                        {item.result.confidence}%
+                      <span className={(item.result.confidence || 0) >= 70 ? "text-emerald-500" : "text-yellow-500"}>
+                        {item.result.confidence || 0}%
                       </span>
                     </div>
                   </div>

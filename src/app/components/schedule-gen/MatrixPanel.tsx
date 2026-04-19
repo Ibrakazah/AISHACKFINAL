@@ -34,7 +34,7 @@ TEACHER_ASSIGNMENTS.forEach(t => {
       }
       
       const subjData = uniqueSubjects.get(key)!;
-      const classMap = t.subjects[subj] as Record<string, number>;
+      const classMap = (t.subjects as any)[subj] as Record<string, number>;
       
       Object.entries(classMap).forEach(([className, hours]) => {
          const stdClass = className
@@ -57,7 +57,7 @@ TEACHER_ASSIGNMENTS.forEach(t => {
 const DEFAULT_SUBJECTS = Array.from(uniqueSubjects.values());
 
 
-const DEFAULT_TEACHERS = TEACHER_ASSIGNMENTS.map(ta => ({
+const DEFAULT_TEACHERS = (TEACHER_ASSIGNMENTS as any[]).map(ta => ({
   name: ta.name,
   subjects: Object.keys(ta.subjects),
   maxHoursPerDay: 6,
@@ -245,13 +245,13 @@ export function MatrixPanel() {
     if (!modalState) return;
     const { type, grade, subjIdx, value } = modalState;
     if (type === "newClass" && value.trim()) {
-      setStore(prev => ({ ...prev, classes: [...prev.classes, value.trim()].sort() }));
+      setStore((prev: any) => ({ ...prev, classes: [...prev.classes, value.trim()].sort() }));
     } else if (type === "global" && grade) {
       const cleanVal = value.trim().replace(/\s/g, '');
       const isRel = cleanVal.startsWith("+") || cleanVal.startsWith("-");
       const dlt = Number(cleanVal);
       if (!isNaN(dlt)) {
-        setStore(prev => {
+        setStore((prev: any) => {
           const newSubjects = prev.subjects.map((s: any) => {
             const newHrs = { ...(s.hoursPerWeek || {}) };
             prev.classes.forEach((c: string) => {
@@ -291,7 +291,7 @@ export function MatrixPanel() {
     const delta = Number(cleanVal);
     if (isNaN(delta)) return;
 
-    setStore(prev => {
+    setStore((prev: any) => {
       const subjects = [...prev.subjects];
       const s = { ...subjects[subjIdx] };
       const newHrs = { ...(s.hoursPerWeek || {}) };

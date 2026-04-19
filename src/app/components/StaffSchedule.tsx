@@ -13,6 +13,7 @@ export function StaffSchedule() {
   const { name } = useParams<{ name: string }>();
   const decodedName = name ? decodeURIComponent(name) : "Сотрудник";
   const [scheduleData, setScheduleData] = useState<any>({});
+  const [tasks, setTasks] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // 1. Извлекаем уроки для данного сотрудника из базы

@@ -34,6 +34,13 @@ export interface ParsedCommand {
   originalText?: string;
   actions?: string[];
   engine?: string;
+  generatedTasks?: any[];
+  teacherAbsence?: {
+    absentTeacher: string;
+    day: string;
+  };
+  scheduleMassDelete?: string;
+  scheduleUpdate?: any;
 }
 
 

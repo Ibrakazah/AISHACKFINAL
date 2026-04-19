@@ -457,7 +457,6 @@ export function Reports() {
                         : <>Мне не хватает "живых" данных на сегодняшний день. База пока <span className="text-rose-400 font-bold">не синхронизирована</span>. <br/><br/>Пожалуйста, уточните вручную:</>
                       }
                     </p>
-                    
                     <div className="space-y-4">
                       {reportType === "timesheet" ? (
                         <>
@@ -467,7 +466,6 @@ export function Reports() {
                               type="text" 
                               value={teacherName}
                               onChange={(e) => setTeacherName(e.target.value)}
-                              disabled={aiState === "generating" || aiState === "done"}
                               className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
                               placeholder="Например, Аскар Ахметов"
                             />
@@ -478,7 +476,6 @@ export function Reports() {
                               type="number" 
                               value={teacherHours}
                               onChange={(e) => setTeacherHours(e.target.value)}
-                              disabled={aiState === "generating" || aiState === "done"}
                               className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
                               placeholder="Например, 134"
                             />
@@ -504,7 +501,6 @@ export function Reports() {
                               type="number" 
                               value={sickCount}
                               onChange={(e) => setSickCount(e.target.value)}
-                              disabled={aiState === "generating" || aiState === "done"}
                               className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
                               placeholder="Например, 12"
                             />
@@ -515,7 +511,6 @@ export function Reports() {
                               type="number" 
                               value={compCount}
                               onChange={(e) => setCompCount(e.target.value)}
-                              disabled={aiState === "generating" || aiState === "done"}
                               className="w-full bg-black/50 border border-indigo-500/30 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 transition-all font-mono"
                               placeholder="Например, 3"
                             />
@@ -523,14 +518,12 @@ export function Reports() {
                         </>
                       )}
 
-                      {aiState === "asking" && (
-                        <button 
-                          onClick={handleConfirmData}
-                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase text-xs tracking-widest py-4 rounded-xl shadow-lg shadow-indigo-600/20 transition-all active:scale-95"
-                        >
-                          Сформировать отчет
-                        </button>
-                      )}
+                      <button 
+                        onClick={handleConfirmData}
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase text-xs tracking-widest py-4 rounded-xl shadow-lg shadow-indigo-600/20 transition-all active:scale-95"
+                      >
+                        Сформировать отчет
+                      </button>
                     </div>
                   </div>
                 )}

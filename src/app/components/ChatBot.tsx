@@ -92,7 +92,8 @@ export function ChatBot() {
 
   const resolveTask = async (taskId: number, action: "approve" | "reject") => {
     try {
-      setTasks(tasks.map(t => t.id === taskId ? { ...t, status: action } : t));
+      const finalStatus = action === "approve" ? "approved" : "rejected";
+      setTasks(tasks.map(t => t.id === taskId ? { ...t, status: finalStatus } : t));
       await fetch(`http://localhost:8000/api/ai-tasks/${taskId}/resolve`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action })
       });
@@ -298,11 +299,11 @@ export function ChatBot() {
                          </div>
                          <button 
                            onClick={() => executeAction(msg.id, msg.proposedAction)}
-                           disabled={msg.status === "executed"}
+                           disabled={false}
                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3 px-4 rounded-2xl flex items-center justify-center gap-2 text-sm font-black uppercase tracking-tighter transition-all active:scale-95 shadow-lg shadow-indigo-500/20"
                          >
-                           {msg.status === "executed" ? <CheckCircle className="w-4 h-4" /> : <Send className="w-4 h-4" />}
-                           {msg.status === "executed" ? "Выполнено" : "Подтвердить запуск"}
+                           <Send className="w-4 h-4 ml-1" />
+                           Подтвердить запуск
                          </button>
                       </div>
                     )}
