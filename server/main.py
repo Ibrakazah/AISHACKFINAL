@@ -387,10 +387,11 @@ async def internal_webhook(request: Request):
          "competition_count": 0
       }},
       "incident": {{
-         "is_incident": boolean,
+         "is_incident": boolean, // TRUE ТОЛЬКО ДЛЯ ФИЗИЧЕСКОГО РЕМОНТА (окна, мебель, сантехника, свет). Для буллинга, драк, болезней ставь false.
          "location": "комната или кабинет",
-         "assigned_to": "кому поручить"
+         "assigned_to": "кому поручить (Завхоз, Слесарь, Электрик, Сантехник)"
       }}
+
     }}
     """
     

@@ -23,13 +23,23 @@ export function TechnicianView() {
         const response = await fetch("http://localhost:8000/api/v1/incidents/active");
         if (response.ok) {
           const data = await response.json();
-          setIncidents(data.incidents || []);
+          const allIncidents: Incident[] = data.incidents || [];
+          
+          // Filter only technical/maintenance related incidents
+          const technicalRoles = ["Завхоз", "Слесарь", "Электрик", "Сантехник", "Техник", "IT", "Мастер"];
+          const filtered = allIncidents.filter(inc => 
+            technicalRoles.some(role => inc.assignedTo.includes(role)) || 
+            inc.assignedTo.toLowerCase().includes("ремонт")
+          );
+          
+          setIncidents(filtered);
         }
       } catch (error) {
         console.error("Failed to fetch incidents:", error);
       }
     };
     fetchIncidents();
+
     const interval = setInterval(fetchIncidents, 10000); // Polling
     return () => clearInterval(interval);
   }, []);
