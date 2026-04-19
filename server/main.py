@@ -418,10 +418,11 @@ async def internal_webhook(request: Request):
     try:
         headers = {"Authorization": f"Bearer {API_KEY}"}
         payload = {
-            "model": "llama-3.3-70b-versatile",
+            "model": "llama-3.1-8b-instant",
             "messages": [{ "role": "user", "content": prompt }],
             "temperature": 0
         }
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(GROQ_URL, headers=headers, json=payload, timeout=30)
         
