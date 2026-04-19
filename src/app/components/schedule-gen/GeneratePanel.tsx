@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { loadMatrixStore } from "./MatrixPanel";
 import { generateAiSchedule } from "../../services/gemini";
+import * as XLSX from "xlsx";
 
 // ── Types ──
 export interface GeneratedCell {
@@ -166,22 +167,31 @@ export function GeneratePanel({ generatedSchedule, setGeneratedSchedule, generat
     return pa.char.localeCompare(pb.char);
   }) : [];
 
-  const downloadCSV = () => {
+  const downloadExcel = () => {
     if (!generatedSchedule) return;
-    const rows: string[] = ["Класс,День,Время,Предмет,Учитель,Кабинет,Тип"];
+    const data = [];
     for (const cls of classes) {
       for (const day of DAYS) {
         for (const time of TIME_SLOTS) {
           const cell = generatedSchedule[cls]?.[day]?.[time];
           if (cell) {
-            rows.push(`${cls},${day},${time},${cell.subject},${cell.teacher},${cell.room},${cell.isLent ? "Лента" : "Обычный"}`);
+            data.push({
+              "КЛАСС": cls,
+              "ДЕНЬ НЕДЕЛИ": day,
+              "ВРЕМЯ": time,
+              "Дисциплина": cell.subject,
+              "Преподаватель": cell.teacher,
+              "Аудитория": cell.room,
+              "Специфика": cell.isLent ? (cell.lentType === "profile" ? "Профиль ҰБТ" : "Уровневая Лента") : "Обычный"
+            });
           }
         }
       }
     }
-    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "schedule_generated.csv"; a.click();
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Полное Расписание");
+    XLSX.writeFile(wb, "AQBOBEK_Schedule.xlsx");
   };
 
   return (
@@ -245,10 +255,10 @@ export function GeneratePanel({ generatedSchedule, setGeneratedSchedule, generat
             
             {generatedSchedule && (
               <button
-                onClick={downloadCSV}
+                onClick={downloadExcel}
                 className="flex items-center gap-2 px-4 py-2.5 bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-gray-200 transition-all"
               >
-                <Download className="w-4 h-4" /> CSV
+                <Download className="w-4 h-4" /> EXCEL
               </button>
             )}
           </div>
